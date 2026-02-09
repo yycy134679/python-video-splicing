@@ -34,6 +34,21 @@ def parse_inputs(text: str, csv_bytes: bytes | None) -> list[InputRow]:
     return rows
 
 
+def parse_split_inputs_with_errors(
+    pid_text: str,
+    video_url_text: str,
+    csv_bytes: bytes | None,
+) -> tuple[list[InputRow], list[ParseFailure]]:
+    # 分列输入优先：任一输入框有内容就忽略 CSV
+    has_pid_text = any(line.strip() for line in pid_text.splitlines())
+    has_url_text = any(line.strip() for line in video_url_text.splitlines())
+    if has_pid_text or has_url_text:
+        return _parse_split_text_rows(pid_text=pid_text, video_url_text=video_url_text)
+    if csv_bytes:
+        return _parse_csv_rows(csv_bytes)
+    return [], []
+
+
 def parse_inputs_with_errors(
     text: str, csv_bytes: bytes | None
 ) -> tuple[list[InputRow], list[ParseFailure]]:
@@ -83,6 +98,42 @@ def _parse_text_rows(text: str) -> tuple[list[InputRow], list[ParseFailure]]:
                 )
             )
         index += 1
+
+    return rows, failures
+
+
+def _parse_split_text_rows(
+    pid_text: str,
+    video_url_text: str,
+) -> tuple[list[InputRow], list[ParseFailure]]:
+    rows: list[InputRow] = []
+    failures: list[ParseFailure] = []
+
+    pid_lines = [line.strip() for line in pid_text.splitlines()]
+    url_lines = [line.strip() for line in video_url_text.splitlines()]
+
+    row_index = 0
+    for i in range(max(len(pid_lines), len(url_lines))):
+        pid_raw = pid_lines[i] if i < len(pid_lines) else ""
+        video_url = url_lines[i] if i < len(url_lines) else ""
+
+        # 两列同一行都为空则忽略
+        if not pid_raw and not video_url:
+            continue
+
+        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        if error:
+            failures.append(ParseFailure(index=row_index, pid_raw=pid_raw, error=error))
+        else:
+            rows.append(
+                InputRow(
+                    index=row_index,
+                    pid_raw=pid_raw,
+                    pid_sanitized=sanitize_pid(pid_raw),
+                    video_url=video_url,
+                )
+            )
+        row_index += 1
 
     return rows, failures
 

@@ -8,7 +8,10 @@ import streamlit as st
 
 from video_splicer.artifact import build_download_artifact, collect_work_dirs
 from video_splicer.config import load_config, validate_runtime
-from video_splicer.input_parser import assign_output_filenames, parse_inputs_with_errors
+from video_splicer.input_parser import (
+    assign_output_filenames,
+    parse_split_inputs_with_errors,
+)
 from video_splicer.models import ParseFailure, TaskResult
 from video_splicer.runner import process_batch
 
@@ -47,19 +50,32 @@ with st.expander("输入说明", expanded=False):
     st.markdown(
         "\n".join(
             [
-                "- 每行格式: `pid,video_url`",
-                "- 当文本框存在非空行时，会忽略 CSV",
+                "- 左侧输入 `pid`，右侧输入 `video_url`，按行一一对应",
+                "- 任一文本框存在非空行时，会忽略 CSV",
                 "- 仅支持公开 `http/https` 链接",
                 "- 重复 pid 自动生成 `pid__2.mp4`、`pid__3.mp4`",
             ]
         )
     )
 
-text_input = st.text_area(
-    "多行文本输入（每行: pid,video_url）",
-    height=220,
-    placeholder="demo001,https://example.com/video1.mp4\ndemo001,https://example.com/video2.mp4",
-)
+pid_col, url_col = st.columns(2)
+with pid_col:
+    pid_input = st.text_area(
+        "PID（每行一条）",
+        height=220,
+        placeholder="demo001\ndemo001\ndemo002",
+    )
+
+with url_col:
+    video_url_input = st.text_area(
+        "视频链接（每行一条）",
+        height=220,
+        placeholder=(
+            "https://example.com/video1.mp4\n"
+            "https://example.com/video2.mp4\n"
+            "https://example.com/video3.mp4"
+        ),
+    )
 
 uploaded_csv = st.file_uploader("可选 CSV 上传（列: pid,video_url）", type=["csv"])
 
@@ -92,7 +108,11 @@ if start_clicked:
         progress_box.progress(min(max(ratio, 0.0), 1.0))
 
     csv_bytes = uploaded_csv.getvalue() if uploaded_csv else None
-    rows, parse_failures = parse_inputs_with_errors(text=text_input, csv_bytes=csv_bytes)
+    rows, parse_failures = parse_split_inputs_with_errors(
+        pid_text=pid_input,
+        video_url_text=video_url_input,
+        csv_bytes=csv_bytes,
+    )
 
     if not rows and not parse_failures:
         st.warning("请输入至少一条有效数据。")

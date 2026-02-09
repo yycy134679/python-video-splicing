@@ -17,6 +17,41 @@ class VideoProbe:
     height: int
     duration_sec: float
     has_audio: bool
+    video_bitrate: int
+    audio_bitrate: int
+    format_bitrate: int
+
+
+DEFAULT_VIDEO_BITRATE = 2_500_000
+DEFAULT_AUDIO_BITRATE = 128_000
+MIN_VIDEO_BITRATE = 300_000
+
+
+def _parse_positive_int(raw: object) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _select_video_bitrate(source_probe: VideoProbe) -> int:
+    if source_probe.video_bitrate > 0:
+        return max(source_probe.video_bitrate, MIN_VIDEO_BITRATE)
+
+    if source_probe.format_bitrate > 0 and source_probe.audio_bitrate > 0:
+        return max(source_probe.format_bitrate - source_probe.audio_bitrate, MIN_VIDEO_BITRATE)
+
+    if source_probe.format_bitrate > 0:
+        return max(source_probe.format_bitrate, MIN_VIDEO_BITRATE)
+
+    return DEFAULT_VIDEO_BITRATE
+
+
+def _select_audio_bitrate(source_probe: VideoProbe) -> int:
+    if source_probe.audio_bitrate > 0:
+        return source_probe.audio_bitrate
+    return DEFAULT_AUDIO_BITRATE
 
 
 def ensure_ffmpeg_available() -> None:
@@ -66,7 +101,8 @@ def probe_video(video_path: Path) -> VideoProbe:
     if width <= 0 or height <= 0:
         raise FFmpegError("无法获取视频分辨率")
 
-    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    has_audio = audio_stream is not None
 
     duration_str = format_data.get("duration") or video_stream.get("duration")
     try:
@@ -74,7 +110,19 @@ def probe_video(video_path: Path) -> VideoProbe:
     except (TypeError, ValueError):
         duration = 0.0
 
-    return VideoProbe(width=width, height=height, duration_sec=duration, has_audio=has_audio)
+    video_bitrate = _parse_positive_int(video_stream.get("bit_rate"))
+    audio_bitrate = _parse_positive_int(audio_stream.get("bit_rate")) if audio_stream else 0
+    format_bitrate = _parse_positive_int(format_data.get("bit_rate"))
+
+    return VideoProbe(
+        width=width,
+        height=height,
+        duration_sec=duration,
+        has_audio=has_audio,
+        video_bitrate=video_bitrate,
+        audio_bitrate=audio_bitrate,
+        format_bitrate=format_bitrate,
+    )
 
 
 def concat_with_endcard(
@@ -88,6 +136,8 @@ def concat_with_endcard(
 
     source_probe = probe_video(source_video)
     endcard_probe = probe_video(endcard_video)
+    target_video_bitrate = _select_video_bitrate(source_probe)
+    target_audio_bitrate = _select_audio_bitrate(source_probe)
 
     input_args = ["-i", str(source_video), "-i", str(endcard_video)]
     filter_parts = [
@@ -163,10 +213,18 @@ def concat_with_endcard(
         "[a]",
         "-c:v",
         "libx264",
+        "-b:v",
+        str(target_video_bitrate),
+        "-maxrate",
+        str(target_video_bitrate),
+        "-bufsize",
+        str(target_video_bitrate * 2),
         "-pix_fmt",
         "yuv420p",
         "-c:a",
         "aac",
+        "-b:a",
+        str(target_audio_bitrate),
         "-movflags",
         "+faststart",
         str(output_video),
