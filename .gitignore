@@ -25,6 +25,14 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+*.spec.bak
+venv_build/
+
+# macOS app packaging
+*.app
+*.dmg
+*.icns
+icon.iconset/
 
 # Generated media/output artifacts
 *.mp4
