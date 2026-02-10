@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from .models import TaskResult
@@ -55,7 +56,9 @@ def build_download_artifact(results: list[TaskResult]) -> tuple[str, str, bytes]
 
         archive.writestr("result.csv", result_csv)
 
-    return "application/zip", "results.zip", zip_buffer.getvalue()
+    timestamp = datetime.now().strftime("%m-%d-%H-%M")
+    zip_name = f"results-{timestamp}.zip"
+    return "application/zip", zip_name, zip_buffer.getvalue()
 
 
 def collect_work_dirs(results: list[TaskResult]) -> list[Path]:

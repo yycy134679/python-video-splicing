@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 
@@ -78,9 +79,9 @@ def test_multiple_rows_return_zip_with_mp4_and_result_csv(tmp_path: Path) -> Non
     mime, name, payload = build_download_artifact(results)
 
     assert mime == "application/zip"
-    assert name == "results.zip"
+    assert re.fullmatch(r"results-\d{2}-\d{2}-\d{2}-\d{2}\.zip", name)
 
-    archive_path = tmp_path / "results.zip"
+    archive_path = tmp_path / name
     archive_path.write_bytes(payload)
 
     with zipfile.ZipFile(archive_path) as archive:
