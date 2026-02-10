@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import csv
-from io import StringIO
+from io import BytesIO, StringIO
+from pathlib import Path
 from urllib.parse import urlparse
+
+import pandas as pd
 
 from .models import InputRow, ParseFailure
 
 
 REQUIRED_COLUMNS = {"pid", "video_url"}
+REQUIRED_EXCEL_COLUMNS = {"商品id", "视频链接"}
 INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
 
 
@@ -37,15 +41,19 @@ def parse_inputs(text: str, csv_bytes: bytes | None) -> list[InputRow]:
 def parse_split_inputs_with_errors(
     pid_text: str,
     video_url_text: str,
-    csv_bytes: bytes | None,
+    upload_file_name: str | None = None,
+    upload_bytes: bytes | None = None,
 ) -> tuple[list[InputRow], list[ParseFailure]]:
     # 分列输入优先：任一输入框有内容就忽略 CSV
     has_pid_text = any(line.strip() for line in pid_text.splitlines())
     has_url_text = any(line.strip() for line in video_url_text.splitlines())
     if has_pid_text or has_url_text:
         return _parse_split_text_rows(pid_text=pid_text, video_url_text=video_url_text)
-    if csv_bytes:
-        return _parse_csv_rows(csv_bytes)
+    if upload_bytes:
+        return _parse_uploaded_rows(
+            upload_file_name=upload_file_name,
+            upload_bytes=upload_bytes,
+        )
     return [], []
 
 
@@ -143,6 +151,82 @@ def _decode_csv(csv_bytes: bytes) -> str:
         return csv_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
         return csv_bytes.decode("utf-8", errors="replace")
+
+
+def _normalize_header(value: object) -> str:
+    return "".join(str(value).strip().lower().split())
+
+
+def _to_text(value: object) -> str:
+    if value is None:
+        return ""
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _parse_uploaded_rows(
+    upload_file_name: str | None,
+    upload_bytes: bytes,
+) -> tuple[list[InputRow], list[ParseFailure]]:
+    suffix = Path(upload_file_name or "").suffix.lower()
+    if suffix in {".xlsx", ".xlsm"}:
+        return _parse_excel_rows(upload_bytes)
+    if suffix in {"", ".csv"}:
+        return _parse_csv_rows(upload_bytes)
+
+    return [], [
+        ParseFailure(
+            index=0,
+            pid_raw="",
+            error=f"不支持的文件类型: {upload_file_name or 'unknown'}",
+        )
+    ]
+
+
+def _parse_excel_rows(excel_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure]]:
+    rows: list[InputRow] = []
+    failures: list[ParseFailure] = []
+
+    try:
+        df = pd.read_excel(BytesIO(excel_bytes), dtype=object)
+    except Exception as exc:  # noqa: BLE001
+        return [], [ParseFailure(index=0, pid_raw="", error=f"Excel 解析失败: {exc}")]
+
+    normalized_headers = {_normalize_header(col): col for col in df.columns}
+    normalized_required = {_normalize_header(col) for col in REQUIRED_EXCEL_COLUMNS}
+    if not normalized_required.issubset(set(normalized_headers.keys())):
+        return [], [ParseFailure(index=0, pid_raw="", error="Excel 缺少必需列: 商品id,视频链接")]
+
+    pid_col = normalized_headers[_normalize_header("商品id")]
+    url_col = normalized_headers[_normalize_header("视频链接")]
+
+    index = 0
+    for row in df[[pid_col, url_col]].itertuples(index=False, name=None):
+        pid_raw = _to_text(row[0])
+        video_url = _to_text(row[1])
+
+        # 需求：链接为空时直接忽略，不作为失败项
+        if not video_url:
+            continue
+
+        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        if error:
+            failures.append(ParseFailure(index=index, pid_raw=pid_raw, error=error))
+        else:
+            rows.append(
+                InputRow(
+                    index=index,
+                    pid_raw=pid_raw,
+                    pid_sanitized=sanitize_pid(pid_raw),
+                    video_url=video_url,
+                )
+            )
+        index += 1
+
+    return rows, failures
 
 
 def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure]]:

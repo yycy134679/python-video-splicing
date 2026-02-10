@@ -28,7 +28,7 @@ def load_config() -> Config:
     return Config(
         endcard_path=endcard_path,
         max_video_mb=_read_positive_int("SP_MAX_VIDEO_MB", 50),
-        max_workers=_read_positive_int("SP_MAX_WORKERS", 4),
+        max_workers=_read_positive_int("SP_MAX_WORKERS", 6),
         task_timeout_sec=_read_positive_int("SP_TASK_TIMEOUT_SEC", 180),
         download_retries=_read_positive_int("SP_DOWNLOAD_RETRIES", 2),
     )

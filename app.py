@@ -51,7 +51,8 @@ with st.expander("输入说明", expanded=False):
         "\n".join(
             [
                 "- 左侧输入 `pid`，右侧输入 `video_url`，按行一一对应",
-                "- 任一文本框存在非空行时，会忽略 CSV",
+                "- 任一文本框存在非空行时，会忽略上传文件",
+                "- 上传 Excel 时自动读取列：`商品id`、`视频链接`（空链接行自动忽略）",
                 "- 仅支持公开 `http/https` 链接",
                 "- 重复 pid 自动生成 `pid__2.mp4`、`pid__3.mp4`",
             ]
@@ -77,7 +78,10 @@ with url_col:
         ),
     )
 
-uploaded_csv = st.file_uploader("可选 CSV 上传（列: pid,video_url）", type=["csv"])
+uploaded_file = st.file_uploader(
+    "可选文件上传（CSV: pid,video_url；Excel: 商品id,视频链接）",
+    type=["csv", "xlsx", "xlsm"],
+)
 
 if "sp_results" not in st.session_state:
     st.session_state["sp_results"] = None
@@ -107,11 +111,13 @@ if start_clicked:
         ratio = 1.0 if total == 0 else done / total
         progress_box.progress(min(max(ratio, 0.0), 1.0))
 
-    csv_bytes = uploaded_csv.getvalue() if uploaded_csv else None
+    upload_bytes = uploaded_file.getvalue() if uploaded_file else None
+    upload_name = uploaded_file.name if uploaded_file else None
     rows, parse_failures = parse_split_inputs_with_errors(
         pid_text=pid_input,
         video_url_text=video_url_input,
-        csv_bytes=csv_bytes,
+        upload_file_name=upload_name,
+        upload_bytes=upload_bytes,
     )
 
     if not rows and not parse_failures:

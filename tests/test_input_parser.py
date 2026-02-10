@@ -1,3 +1,7 @@
+from io import BytesIO
+
+import pandas as pd
+
 from video_splicer.input_parser import (
     parse_inputs_with_errors,
     parse_split_inputs_with_errors,
@@ -53,7 +57,8 @@ def test_split_inputs_have_priority_over_csv() -> None:
     rows, failures = parse_split_inputs_with_errors(
         pid_text=pid_text,
         video_url_text=video_url_text,
-        csv_bytes=csv_bytes,
+        upload_file_name="input.csv",
+        upload_bytes=csv_bytes,
     )
 
     assert [item.pid_raw for item in rows] == ["p1"]
@@ -69,7 +74,8 @@ def test_split_inputs_pair_lines_and_keep_processing_on_bad_rows() -> None:
     rows, failures = parse_split_inputs_with_errors(
         pid_text=pid_text,
         video_url_text=video_url_text,
-        csv_bytes=None,
+        upload_file_name=None,
+        upload_bytes=None,
     )
 
     assert [item.pid_raw for item in rows] == ["ok_1", "ok_2"]
@@ -79,3 +85,47 @@ def test_split_inputs_pair_lines_and_keep_processing_on_bad_rows() -> None:
     assert failures[0].error == "video_url 不能为空"
     assert failures[1].index == 3
     assert failures[1].error == "pid 不能为空"
+
+
+def test_excel_parses_product_id_and_video_link_and_skips_empty_link() -> None:
+    df = pd.DataFrame(
+        [
+            {"商品id": 1001, "视频链接": "https://example.com/a.mp4"},
+            {"商品id": 1002, "视频链接": None},
+            {"商品id": 1003, "视频链接": "   "},
+            {"商品id": 1004, "视频链接": "https://example.com/d.mp4"},
+        ]
+    )
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False)
+
+    rows, failures = parse_split_inputs_with_errors(
+        pid_text="",
+        video_url_text="",
+        upload_file_name="视频信息.xlsx",
+        upload_bytes=buffer.getvalue(),
+    )
+
+    assert failures == []
+    assert [item.pid_raw for item in rows] == ["1001", "1004"]
+    assert [item.video_url for item in rows] == [
+        "https://example.com/a.mp4",
+        "https://example.com/d.mp4",
+    ]
+
+
+def test_excel_requires_product_id_and_video_link_columns() -> None:
+    df = pd.DataFrame([{"id": 1, "url": "https://example.com/a.mp4"}])
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False)
+
+    rows, failures = parse_split_inputs_with_errors(
+        pid_text="",
+        video_url_text="",
+        upload_file_name="bad.xlsx",
+        upload_bytes=buffer.getvalue(),
+    )
+
+    assert rows == []
+    assert len(failures) == 1
+    assert failures[0].error == "Excel 缺少必需列: 商品id,视频链接"
