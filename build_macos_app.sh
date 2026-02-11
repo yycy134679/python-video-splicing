@@ -19,7 +19,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 APP_NAME="视频拼接工具"
-APP_VERSION="1.0.0"
+APP_VERSION="1.1"
 BUNDLE_ID="com.bytedance.video-splicer"
 APP_DIR="dist/${APP_NAME}.app"
 
@@ -39,14 +39,14 @@ fi
 echo "   FFmpeg: $(which ffmpeg)"
 echo "   FFprobe: $(which ffprobe)"
 
-# ---- 2. 创建 / 激活虚拟环境 ----
-if [ ! -d "venv_build" ]; then
-    echo -e "${YELLOW}▶ 创建打包虚拟环境...${NC}"
-    python3 -m venv venv_build
+# ---- 2. 激活现有虚拟环境 ----
+if [ ! -d ".venv" ]; then
+    echo -e "${RED}   ✗ .venv 不存在，请先创建虚拟环境${NC}"
+    exit 1
 fi
 
 echo -e "${YELLOW}▶ 激活虚拟环境 & 安装依赖...${NC}"
-source venv_build/bin/activate
+source .venv/bin/activate
 
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
@@ -182,4 +182,4 @@ echo "   cd dist && zip -r \"${APP_NAME}.zip\" \"${APP_NAME}.app\""
 echo ""
 echo "✅ 同事无需安装 Homebrew/FFmpeg/Python，双击即用！"
 
-deactivate
+deactivate 2>/dev/null || true
