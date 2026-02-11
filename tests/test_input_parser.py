@@ -87,6 +87,29 @@ def test_split_inputs_pair_lines_and_keep_processing_on_bad_rows() -> None:
     assert failures[1].error == "pid 不能为空"
 
 
+def test_split_inputs_keep_duplicate_pid_rows() -> None:
+    pid_text = "\n".join(["dup_pid", "dup_pid", "dup_pid"])
+    video_url_text = "\n".join(
+        [
+            "https://example.com/1.mp4",
+            "https://example.com/2.mp4",
+            "https://example.com/3.mp4",
+        ]
+    )
+
+    rows, failures = parse_split_inputs_with_errors(
+        pid_text=pid_text,
+        video_url_text=video_url_text,
+        upload_file_name=None,
+        upload_bytes=None,
+    )
+
+    assert failures == []
+    assert len(rows) == 3
+    assert [item.pid_raw for item in rows] == ["dup_pid", "dup_pid", "dup_pid"]
+    assert [item.index for item in rows] == [0, 1, 2]
+
+
 def test_excel_parses_product_id_and_video_link_and_skips_empty_link() -> None:
     df = pd.DataFrame(
         [

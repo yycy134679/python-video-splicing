@@ -306,19 +306,9 @@ def _validate_row(pid_raw: str, video_url: str) -> str:
 
 
 def assign_output_filenames(rows: list[InputRow]) -> dict[int, str]:
-    counts: dict[str, int] = {}
     assigned: dict[int, str] = {}
 
-    for row in sorted(rows, key=lambda item: item.index):
-        base_name = row.pid_sanitized or "pid"
-        counts[base_name] = counts.get(base_name, 0) + 1
-        duplicate_index = counts[base_name]
-
-        if duplicate_index == 1:
-            filename = f"{base_name}.mp4"
-        else:
-            filename = f"{base_name}__{duplicate_index}.mp4"
-
-        assigned[row.index] = filename
+    for order, row in enumerate(sorted(rows, key=lambda item: item.index), start=1):
+        assigned[row.index] = f"{order}.mp4"
 
     return assigned
