@@ -1,5 +1,7 @@
 # 项目指南 — Python 视频拼接工具
 
+- 当有重大代码或涉及此文档内容更新，请同步更新此文档
+
 ## 代码风格
 
 - **Python 3.11+**，每个模块首行 `from __future__ import annotations`

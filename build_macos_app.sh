@@ -111,8 +111,12 @@ PLIST
 # 5b. 写入启动器脚本（macOS 运行 .app 时执行的入口）
 cat > "$APP_DIR/Contents/MacOS/launcher" << 'LAUNCHER'
 #!/bin/bash
+set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)/Resources"
-exec "$DIR/VideoSplicer/VideoSplicer" "$@"
+LOG_DIR="$HOME/Library/Logs/video-splicer"
+mkdir -p "$LOG_DIR"
+nohup "$DIR/VideoSplicer/VideoSplicer" "$@" >> "$LOG_DIR/launcher.log" 2>&1 &
+exit 0
 LAUNCHER
 chmod +x "$APP_DIR/Contents/MacOS/launcher"
 
