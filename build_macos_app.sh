@@ -19,9 +19,11 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 APP_NAME="视频拼接工具"
-APP_VERSION="1.1"
+APP_VERSION="2.0"
 BUNDLE_ID="com.bytedance.video-splicer"
 APP_DIR="dist/${APP_NAME}.app"
+ZIP_PATH="dist/${APP_NAME}-v${APP_VERSION}.zip"
+BUILD_DMG="${BUILD_DMG:-0}"
 
 echo "🚀 开始打包 macOS 应用..."
 echo ""
@@ -155,11 +157,14 @@ check_file "$internal/assets/video/endcard.mp4" "落版视频 (endcard.mp4)"
 app_size=$(du -sh "$APP_DIR" | awk '{print $1}')
 echo "   📦 应用大小: $app_size"
 
-# ---- 7. 可选：创建 DMG ----
-echo ""
-read -p "是否创建 DMG 安装包？(y/N) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+# ---- 7. 创建 ZIP 分发包 ----
+echo -e "${YELLOW}▶ 创建 ZIP 分发包...${NC}"
+rm -f "$ZIP_PATH"
+ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ZIP_PATH"
+echo -e "${GREEN}   ✓ ZIP: $(pwd)/$ZIP_PATH${NC}"
+
+# ---- 8. 可选：创建 DMG ----
+if [[ "$BUILD_DMG" == "1" ]]; then
     dmg_name="${APP_NAME}-v${APP_VERSION}.dmg"
     echo -e "${YELLOW}▶ 创建 DMG...${NC}"
     rm -f "$dmg_name"
@@ -178,11 +183,10 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "📦 应用位置: $(pwd)/dist/${APP_NAME}.app"
 echo ""
+echo "🗜️ ZIP 位置: $(pwd)/$ZIP_PATH"
+echo ""
 echo "🚀 测试运行:"
 echo "   open \"dist/${APP_NAME}.app\""
-echo ""
-echo "📤 分发给同事:"
-echo "   cd dist && zip -r \"${APP_NAME}.zip\" \"${APP_NAME}.app\""
 echo ""
 echo "✅ 同事无需安装 Homebrew/FFmpeg/Python，双击即用！"
 

@@ -10,9 +10,10 @@ import pandas as pd
 from .models import InputRow, ParseFailure
 
 
-REQUIRED_COLUMNS = {"pid", "video_url"}
 REQUIRED_EXCEL_COLUMNS = {"商品id", "视频链接"}
 INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
+DEFAULT_CSV_IDENTIFIER_HEADERS = ("pid",)
+ATTACHMENT_CSV_IDENTIFIER_HEADERS = ("item_id", "pid")
 
 
 def sanitize_pid(pid_raw: str) -> str:
@@ -45,16 +46,32 @@ def parse_split_inputs_with_errors(
     upload_bytes: bytes | None = None,
 ) -> tuple[list[InputRow], list[ParseFailure]]:
     # 分列输入优先：任一输入框有内容就忽略 CSV
-    has_pid_text = any(line.strip() for line in pid_text.splitlines())
-    has_url_text = any(line.strip() for line in video_url_text.splitlines())
-    if has_pid_text or has_url_text:
-        return _parse_split_text_rows(pid_text=pid_text, video_url_text=video_url_text)
-    if upload_bytes:
-        return _parse_uploaded_rows(
-            upload_file_name=upload_file_name,
-            upload_bytes=upload_bytes,
-        )
-    return [], []
+    return _parse_split_identifier_inputs_with_errors(
+        identifier_text=pid_text,
+        video_url_text=video_url_text,
+        upload_file_name=upload_file_name,
+        upload_bytes=upload_bytes,
+        csv_identifier_headers=DEFAULT_CSV_IDENTIFIER_HEADERS,
+        csv_header_hint="pid,video_url",
+        identifier_label="pid",
+    )
+
+
+def parse_attachment_inputs_with_errors(
+    item_id_text: str,
+    video_url_text: str,
+    upload_file_name: str | None = None,
+    upload_bytes: bytes | None = None,
+) -> tuple[list[InputRow], list[ParseFailure]]:
+    return _parse_split_identifier_inputs_with_errors(
+        identifier_text=item_id_text,
+        video_url_text=video_url_text,
+        upload_file_name=upload_file_name,
+        upload_bytes=upload_bytes,
+        csv_identifier_headers=ATTACHMENT_CSV_IDENTIFIER_HEADERS,
+        csv_header_hint="item_id,video_url（兼容 pid,video_url）",
+        identifier_label="item_id",
+    )
 
 
 def parse_inputs_with_errors(
@@ -64,7 +81,12 @@ def parse_inputs_with_errors(
     if any(line.strip() for line in text.splitlines()):
         return _parse_text_rows(text)
     if csv_bytes:
-        return _parse_csv_rows(csv_bytes)
+        return _parse_csv_rows(
+            csv_bytes=csv_bytes,
+            identifier_headers=DEFAULT_CSV_IDENTIFIER_HEADERS,
+            csv_header_hint="pid,video_url",
+            identifier_label="pid",
+        )
     return [], []
 
 
@@ -93,7 +115,7 @@ def _parse_text_rows(text: str) -> tuple[list[InputRow], list[ParseFailure]]:
         pid_raw = pid_raw.strip()
         video_url = video_url.strip()
 
-        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        error = _validate_row(identifier_raw=pid_raw, video_url=video_url, identifier_label="pid")
         if error:
             failures.append(ParseFailure(index=index, pid_raw=pid_raw, error=error))
         else:
@@ -110,9 +132,38 @@ def _parse_text_rows(text: str) -> tuple[list[InputRow], list[ParseFailure]]:
     return rows, failures
 
 
+def _parse_split_identifier_inputs_with_errors(
+    identifier_text: str,
+    video_url_text: str,
+    upload_file_name: str | None,
+    upload_bytes: bytes | None,
+    csv_identifier_headers: tuple[str, ...],
+    csv_header_hint: str,
+    identifier_label: str,
+) -> tuple[list[InputRow], list[ParseFailure]]:
+    has_identifier_text = any(line.strip() for line in identifier_text.splitlines())
+    has_url_text = any(line.strip() for line in video_url_text.splitlines())
+    if has_identifier_text or has_url_text:
+        return _parse_split_text_rows(
+            pid_text=identifier_text,
+            video_url_text=video_url_text,
+            identifier_label=identifier_label,
+        )
+    if upload_bytes:
+        return _parse_uploaded_rows(
+            upload_file_name=upload_file_name,
+            upload_bytes=upload_bytes,
+            csv_identifier_headers=csv_identifier_headers,
+            csv_header_hint=csv_header_hint,
+            identifier_label=identifier_label,
+        )
+    return [], []
+
+
 def _parse_split_text_rows(
     pid_text: str,
     video_url_text: str,
+    identifier_label: str = "pid",
 ) -> tuple[list[InputRow], list[ParseFailure]]:
     rows: list[InputRow] = []
     failures: list[ParseFailure] = []
@@ -129,7 +180,11 @@ def _parse_split_text_rows(
         if not pid_raw and not video_url:
             continue
 
-        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        error = _validate_row(
+            identifier_raw=pid_raw,
+            video_url=video_url,
+            identifier_label=identifier_label,
+        )
         if error:
             failures.append(ParseFailure(index=row_index, pid_raw=pid_raw, error=error))
         else:
@@ -154,7 +209,7 @@ def _decode_csv(csv_bytes: bytes) -> str:
 
 
 def _normalize_header(value: object) -> str:
-    return "".join(str(value).strip().lower().split())
+    return "".join(str(value).strip().lower().replace("_", " ").split())
 
 
 def _to_text(value: object) -> str:
@@ -170,12 +225,20 @@ def _to_text(value: object) -> str:
 def _parse_uploaded_rows(
     upload_file_name: str | None,
     upload_bytes: bytes,
+    csv_identifier_headers: tuple[str, ...],
+    csv_header_hint: str,
+    identifier_label: str,
 ) -> tuple[list[InputRow], list[ParseFailure]]:
     suffix = Path(upload_file_name or "").suffix.lower()
     if suffix in {".xlsx", ".xlsm"}:
-        return _parse_excel_rows(upload_bytes)
+        return _parse_excel_rows(upload_bytes, identifier_label=identifier_label)
     if suffix in {"", ".csv"}:
-        return _parse_csv_rows(upload_bytes)
+        return _parse_csv_rows(
+            csv_bytes=upload_bytes,
+            identifier_headers=csv_identifier_headers,
+            csv_header_hint=csv_header_hint,
+            identifier_label=identifier_label,
+        )
 
     return [], [
         ParseFailure(
@@ -186,7 +249,10 @@ def _parse_uploaded_rows(
     ]
 
 
-def _parse_excel_rows(excel_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure]]:
+def _parse_excel_rows(
+    excel_bytes: bytes,
+    identifier_label: str = "pid",
+) -> tuple[list[InputRow], list[ParseFailure]]:
     rows: list[InputRow] = []
     failures: list[ParseFailure] = []
 
@@ -212,7 +278,11 @@ def _parse_excel_rows(excel_bytes: bytes) -> tuple[list[InputRow], list[ParseFai
         if not video_url:
             continue
 
-        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        error = _validate_row(
+            identifier_raw=pid_raw,
+            video_url=video_url,
+            identifier_label=identifier_label,
+        )
         if error:
             failures.append(ParseFailure(index=index, pid_raw=pid_raw, error=error))
         else:
@@ -229,7 +299,12 @@ def _parse_excel_rows(excel_bytes: bytes) -> tuple[list[InputRow], list[ParseFai
     return rows, failures
 
 
-def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure]]:
+def _parse_csv_rows(
+    csv_bytes: bytes,
+    identifier_headers: tuple[str, ...],
+    csv_header_hint: str,
+    identifier_label: str,
+) -> tuple[list[InputRow], list[ParseFailure]]:
     rows: list[InputRow] = []
     failures: list[ParseFailure] = []
 
@@ -238,8 +313,15 @@ def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure
     if not table:
         return rows, failures
 
-    normalized_headers = [col.strip().lower() for col in table[0]]
-    has_required_headers = REQUIRED_COLUMNS.issubset(set(normalized_headers))
+    normalized_headers = [_normalize_header(col) for col in table[0]]
+    normalized_identifier_headers = {_normalize_header(item) for item in identifier_headers}
+    identifier_col = next(
+        (index for index, header in enumerate(normalized_headers) if header in normalized_identifier_headers),
+        None,
+    )
+    url_header = _normalize_header("video_url")
+    url_col = normalized_headers.index(url_header) if url_header in normalized_headers else None
+    has_required_headers = identifier_col is not None and url_col is not None
 
     if not has_required_headers:
         index = 0
@@ -251,7 +333,7 @@ def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure
                 ParseFailure(
                     index=index,
                     pid_raw=pid_raw,
-                    error="CSV 缺少必需表头: pid,video_url",
+                    error=f"CSV 缺少必需表头: {csv_header_hint}",
                 )
             )
             index += 1
@@ -262,23 +344,24 @@ def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure
                 ParseFailure(
                     index=0,
                     pid_raw=pid_raw,
-                    error="CSV 缺少必需表头: pid,video_url",
+                    error=f"CSV 缺少必需表头: {csv_header_hint}",
                 )
             )
         return rows, failures
-
-    pid_col = normalized_headers.index("pid")
-    url_col = normalized_headers.index("video_url")
 
     index = 0
     for raw in table[1:]:
         if not any(cell.strip() for cell in raw):
             continue
 
-        pid_raw = raw[pid_col].strip() if pid_col < len(raw) else ""
+        pid_raw = raw[identifier_col].strip() if identifier_col < len(raw) else ""
         video_url = raw[url_col].strip() if url_col < len(raw) else ""
 
-        error = _validate_row(pid_raw=pid_raw, video_url=video_url)
+        error = _validate_row(
+            identifier_raw=pid_raw,
+            video_url=video_url,
+            identifier_label=identifier_label,
+        )
         if error:
             failures.append(ParseFailure(index=index, pid_raw=pid_raw, error=error))
         else:
@@ -295,9 +378,9 @@ def _parse_csv_rows(csv_bytes: bytes) -> tuple[list[InputRow], list[ParseFailure
     return rows, failures
 
 
-def _validate_row(pid_raw: str, video_url: str) -> str:
-    if not pid_raw:
-        return "pid 不能为空"
+def _validate_row(identifier_raw: str, video_url: str, identifier_label: str = "pid") -> str:
+    if not identifier_raw:
+        return f"{identifier_label} 不能为空"
     if not video_url:
         return "video_url 不能为空"
     if not is_valid_public_video_url(video_url):
@@ -310,5 +393,20 @@ def assign_output_filenames(rows: list[InputRow]) -> dict[int, str]:
 
     for order, row in enumerate(sorted(rows, key=lambda item: item.index), start=1):
         assigned[row.index] = f"{order}.mp4"
+
+    return assigned
+
+
+def assign_attachment_output_filenames(rows: list[InputRow]) -> dict[int, str]:
+    assigned: dict[int, str] = {}
+    name_counts: dict[str, int] = {}
+
+    for row in sorted(rows, key=lambda item: item.index):
+        base_name = row.pid_sanitized
+        current_count = name_counts.get(base_name, 0) + 1
+        name_counts[base_name] = current_count
+
+        suffix = "" if current_count == 1 else f"__{current_count}"
+        assigned[row.index] = f"{base_name}{suffix}.mp4"
 
     return assigned

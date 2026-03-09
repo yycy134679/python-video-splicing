@@ -125,6 +125,89 @@ def probe_video(video_path: Path) -> VideoProbe:
     )
 
 
+def normalize_video_to_mp4(
+    source_video: Path,
+    output_video: Path,
+    timeout_sec: float,
+) -> None:
+    if timeout_sec <= 0:
+        raise TimeoutError("任务超时")
+
+    remux_cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_video),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_video),
+    ]
+
+    try:
+        _run_ffmpeg_command(remux_cmd, timeout_sec=timeout_sec)
+        return
+    except TimeoutError:
+        raise
+    except FFmpegError:
+        if output_video.exists():
+            output_video.unlink(missing_ok=True)
+
+    source_probe = probe_video(source_video)
+    target_video_bitrate = _select_video_bitrate(source_probe)
+
+    transcode_cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_video),
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "libx264",
+        "-b:v",
+        str(target_video_bitrate),
+        "-maxrate",
+        str(target_video_bitrate),
+        "-bufsize",
+        str(target_video_bitrate * 2),
+        "-pix_fmt",
+        "yuv420p",
+        "-vf",
+        "setsar=1",
+        "-movflags",
+        "+faststart",
+    ]
+
+    if source_probe.has_audio:
+        transcode_cmd.extend(
+            [
+                "-map",
+                "0:a:0",
+                "-c:a",
+                "aac",
+                "-b:a",
+                str(_select_audio_bitrate(source_probe)),
+            ]
+        )
+    else:
+        transcode_cmd.append("-an")
+
+    transcode_cmd.append(str(output_video))
+    _run_ffmpeg_command(transcode_cmd, timeout_sec=timeout_sec)
+
+
 def concat_with_endcard(
     source_video: Path,
     endcard_video: Path,
@@ -230,6 +313,10 @@ def concat_with_endcard(
         str(output_video),
     ]
 
+    _run_ffmpeg_command(cmd, timeout_sec=timeout_sec)
+
+
+def _run_ffmpeg_command(cmd: list[str], timeout_sec: float) -> None:
     try:
         subprocess.run(
             cmd,

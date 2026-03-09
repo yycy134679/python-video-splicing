@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 import shutil
 from pathlib import Path
@@ -34,12 +35,56 @@ def load_config() -> Config:
     )
 
 
-def validate_runtime(config: Config) -> list[str]:
+def build_runtime_config(
+    base_config: Config,
+    max_video_mb: int,
+    max_workers: int,
+    task_timeout_sec: int,
+    download_retries: int,
+) -> Config:
+    return replace(
+        base_config,
+        max_video_mb=max(max_video_mb, 1),
+        max_workers=max(max_workers, 1),
+        task_timeout_sec=max(task_timeout_sec, 1),
+        download_retries=max(download_retries, 0),
+    )
+
+
+def _validate_ffmpeg_runtime() -> list[str]:
+    return _build_runtime_errors(
+        ffmpeg_available=shutil.which("ffmpeg") is not None,
+        ffprobe_available=shutil.which("ffprobe") is not None,
+    )
+
+
+def _build_runtime_errors(
+    ffmpeg_available: bool,
+    ffprobe_available: bool,
+    endcard_error: str | None = None,
+) -> list[str]:
     errors: list[str] = []
-    if not config.endcard_path.is_file():
-        errors.append(f"落版视频不存在: {config.endcard_path}")
-    if shutil.which("ffmpeg") is None:
+    if endcard_error:
+        errors.append(endcard_error)
+    if not ffmpeg_available:
         errors.append("未找到 ffmpeg 可执行文件")
-    if shutil.which("ffprobe") is None:
+    if not ffprobe_available:
         errors.append("未找到 ffprobe 可执行文件")
     return errors
+
+
+def validate_splice_runtime(config: Config) -> list[str]:
+    endcard_error = None if config.endcard_path.is_file() else f"落版视频不存在: {config.endcard_path}"
+    return _build_runtime_errors(
+        ffmpeg_available=shutil.which("ffmpeg") is not None,
+        ffprobe_available=shutil.which("ffprobe") is not None,
+        endcard_error=endcard_error,
+    )
+
+
+def validate_attachment_runtime() -> list[str]:
+    return _validate_ffmpeg_runtime()
+
+
+def validate_runtime(config: Config) -> list[str]:
+    return validate_splice_runtime(config)

@@ -1,22 +1,25 @@
-# Python 视频拼接工具
+# Python 视频工具
 
-基于 **Streamlit + FFmpeg** 的批量视频拼接工具，用于将源视频与落版片尾（endcard）自动拼接，并输出为统一规格的 MP4 文件。适用于内容运营团队高效批量处理商品视频。
+基于 **Streamlit + FFmpeg** 的批量视频处理工具，当前包含两个功能页：
+- **视频拼接**：将源视频与落版片尾（endcard）拼接后输出 MP4
+- **视频链接转附件**：批量下载视频链接并规范化输出为以 `item_id` 命名的 MP4 附件
 
 ## 功能特性
 
-- **批量拼接** — 多条视频并发下载 & 拼接，支持数十条任务同时处理
-- **多种输入方式** — 文本框分列输入 PID / 视频链接，或上传 Excel（`.xlsx`/`.xlsm`）/ CSV 文件
-- **智能编码** — 自动探测源视频码率并匹配输出码率，保证画质一致性
-- **无音轨兼容** — 源视频或落版无音轨时自动补静默音轨，避免拼接失败
-- **分辨率适配** — 落版自动缩放至源视频分辨率，保持画面比例
-- **顺序编号命名** — 输出文件按输入顺序命名为 `1.mp4`、`2.mp4`、`3.mp4`…
-- **一键下载** — 单条结果直接下载 MP4，多条结果打包为 ZIP（含 `result.csv`）
-- **实时进度 & 日志** — 进度条 + 滚动日志面板，处理过程一目了然
+- **双功能页**：同一应用内可切换“视频拼接”和“视频链接转附件”
+- **多种输入方式**：两页都支持双列文本输入，也支持 Excel（`.xlsx`/`.xlsm`）和 CSV
+- **批量并发处理**：支持多条任务并发下载，带实时进度与日志
+- **拼接链路稳定**：自动探测码率、适配分辨率、补齐缺失音轨
+- **附件统一输出 MP4**：优先无损封装为 MP4，失败时回退 H.264/AAC 转码
+- **页面级命名规则**：拼接页输出 `1.mp4`、`2.mp4`；附件页输出 `item_id.mp4`，重复值自动追加 `__2`
+- **一键下载**：单条成功直接下载 MP4，多条结果打包为 ZIP，并附带 `result.csv`
+- **VPN 场景兼容**：只要运行应用的机器本身能访问目标链接，附件页即可下载处理
+- **网页可调处理参数**：支持在侧边栏直接调整视频大小上限、并发数、超时时间和下载重试次数，并附中文说明
 
 ## 项目结构
 
-```
-├── app.py                   # Streamlit 主入口
+```text
+├── app.py                   # Streamlit 主入口（双功能页）
 ├── requirements.txt         # Python 依赖
 ├── pytest.ini               # 测试配置
 ├── assets/video/            # 落版片尾视频（endcard.mp4）
@@ -25,23 +28,27 @@
 │   ├── config.py            #   配置加载 & 运行环境校验
 │   ├── input_parser.py      #   输入解析（文本 / CSV / Excel）
 │   ├── downloader.py        #   视频下载（支持重试 & 超时 & 大小限制）
-│   ├── ffmpeg_pipeline.py   #   FFmpeg 探测 & 拼接流水线
-│   ├── runner.py            #   批量并发调度
+│   ├── ffmpeg_pipeline.py   #   FFmpeg 探测 / 拼接 / MP4 规范化
+│   ├── runner.py            #   批量并发调度（拼接 / 转附件）
 │   └── artifact.py          #   结果打包（CSV / ZIP）
 └── tests/                   # 单元测试
+    ├── test_attachment_artifact.py
+    ├── test_attachment_input_parser.py
+    ├── test_attachment_naming.py
+    ├── test_artifact_decision.py
+    ├── test_bitrate_policy.py
+    ├── test_config_runtime.py
     ├── test_input_parser.py
     ├── test_naming.py
-    ├── test_bitrate_policy.py
-    ├── test_artifact_decision.py
     └── test_result_csv.py
 ```
 
 ## 前置依赖
 
-| 依赖                 | 说明           |
-| -------------------- | -------------- |
-| **Python 3.11+**     | 运行环境       |
-| **FFmpeg / FFprobe** | 视频探测与拼接 |
+| 依赖 | 说明 |
+| --- | --- |
+| **Python 3.11+** | 运行环境 |
+| **FFmpeg / FFprobe** | 视频探测、拼接与 MP4 规范化 |
 
 安装 FFmpeg（macOS）：
 
@@ -65,31 +72,60 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-浏览器访问 `http://localhost:8501` 即可使用。
+浏览器访问 `http://localhost:8501` 即可使用。应用标题会显示 `v2.0`，侧边栏可切换两个功能页。
+
+侧边栏还提供“处理参数设置”，业务同学可以直接修改：
+- `单条视频大小上限`
+- `同时处理数量`
+- `单条任务最长等待时间`
+- `下载失败自动重试次数`
+
+这些设置只影响当前网页里后续发起的任务，不需要改环境变量。
 
 ## 环境变量配置
 
 所有配置项均可通过环境变量覆盖，无需修改代码：
 
-| 环境变量              | 默认值                     | 说明                     |
-| --------------------- | -------------------------- | ------------------------ |
-| `SP_ENDCARD_PATH`     | `assets/video/endcard.mp4` | 落版片尾视频路径         |
-| `SP_MAX_VIDEO_MB`     | `50`                       | 单条源视频最大体积（MB） |
-| `SP_MAX_WORKERS`      | `6`                        | 最大并发线程数           |
-| `SP_TASK_TIMEOUT_SEC` | `180`                      | 单任务超时时间（秒）     |
-| `SP_DOWNLOAD_RETRIES` | `2`                        | 下载最大重试次数         |
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SP_ENDCARD_PATH` | `assets/video/endcard.mp4` | 落版片尾视频路径，仅拼接页使用 |
+| `SP_MAX_VIDEO_MB` | `50` | 单条源视频最大体积（MB） |
+| `SP_MAX_WORKERS` | `4` | 最大并发线程数 |
+| `SP_TASK_TIMEOUT_SEC` | `180` | 单任务超时时间（秒） |
+| `SP_DOWNLOAD_RETRIES` | `2` | 下载最大重试次数 |
 
 ## 使用方式
 
-### 文本输入
+### 视频拼接页
 
-左侧输入框填写 **PID**（每行一条），右侧输入框填写对应的**视频链接**（每行一条，按行一一对应），点击「开始处理」。
+- 左侧输入 **PID**，右侧输入 **视频链接**，按行一一对应
+- 也可上传 Excel（`商品id`、`视频链接`）或 CSV（`pid`、`video_url`）
+- 输出文件按输入顺序命名为 `1.mp4`、`2.mp4`、`3.mp4`...
 
-### 文件上传
+### 视频链接转附件页
 
-上传 Excel 文件（需包含 `商品id` 和 `视频链接` 两列）或 CSV 文件（需包含 `pid` 和 `video_url` 两列）。
+- 左侧输入 **item_id**，右侧输入 **视频链接**，按行一一对应
+- 也可上传 Excel（`商品id`、`视频链接`）或 CSV（`item_id`、`video_url`），同时兼容旧 CSV 表头 `pid`、`video_url`
+- 输出文件固定命名为 `item_id.mp4`，重复值自动变为 `item_id__2.mp4`、`item_id__3.mp4`
+- 如目标链接需要 VPN，则必须由运行当前应用的机器本身具备访问能力
 
 > 注意：当文本框存在非空行时，将忽略上传文件。
+
+## macOS 打包
+
+```bash
+bash build_macos_app.sh
+```
+
+默认产物：
+- `dist/视频拼接工具.app`
+- `dist/视频拼接工具-v2.0.zip`
+
+如需额外生成 DMG，可执行：
+
+```bash
+BUILD_DMG=1 bash build_macos_app.sh
+```
 
 ## 运行测试
 

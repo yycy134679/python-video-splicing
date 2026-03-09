@@ -9,12 +9,12 @@ from pathlib import Path
 from .models import TaskResult
 
 
-def build_result_csv(results: list[TaskResult]) -> bytes:
+def build_result_csv(results: list[TaskResult], identifier_label: str = "pid") -> bytes:
     ordered = sorted(results, key=lambda item: item.index)
 
     sio = io.StringIO(newline="")
     writer = csv.writer(sio)
-    writer.writerow(["pid", "output_filename", "status", "error", "duration_sec"])
+    writer.writerow([identifier_label, "output_filename", "status", "error", "duration_sec"])
 
     for result in ordered:
         writer.writerow(
@@ -30,9 +30,12 @@ def build_result_csv(results: list[TaskResult]) -> bytes:
     return sio.getvalue().encode("utf-8-sig")
 
 
-def build_download_artifact(results: list[TaskResult]) -> tuple[str, str, bytes]:
+def build_download_artifact(
+    results: list[TaskResult],
+    identifier_label: str = "pid",
+) -> tuple[str, str, bytes]:
     ordered = sorted(results, key=lambda item: item.index)
-    result_csv = build_result_csv(ordered)
+    result_csv = build_result_csv(ordered, identifier_label=identifier_label)
 
     if not ordered:
         return "text/csv", "result.csv", result_csv

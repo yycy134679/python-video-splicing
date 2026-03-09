@@ -1,4 +1,4 @@
-# 项目指南 — Python 视频拼接工具
+# 项目指南 — Python 视频工具
 
 - 当有重大代码或涉及此文档内容更新，请同步更新此文档
 
@@ -15,15 +15,17 @@
 
 ## 架构
 
-核心数据流：用户输入 → `input_parser` 解析为 `InputRow` → `runner.process_batch()` 并发下载+拼接 → `TaskResult` → `artifact` 打包输出。
+核心数据流：
+- 视频拼接：用户输入 → `input_parser` 解析为 `InputRow` → `runner.process_batch()` 并发下载+拼接 → `TaskResult` → `artifact` 打包输出
+- 视频链接转附件：用户输入 → `input_parser` 解析为 `InputRow` → `runner.process_attachment_batch()` 并发下载+转 MP4 → `TaskResult` → `artifact` 打包输出
 
-```
-app.py                          # Streamlit UI 入口，绝对导入
+```text
+app.py                          # Streamlit UI 入口，双功能页导航
 ├── video_splicer/config.py     # 环境变量(SP_前缀)→ frozen Config dataclass
 ├── video_splicer/input_parser.py  # 文本框/CSV/Excel → InputRow + ParseFailure
 ├── video_splicer/runner.py     # ThreadPoolExecutor 并发调度，回调解耦 UI
 │   ├── downloader.py           # HTTP 流式下载，重试+超时+大小限制
-│   └── ffmpeg_pipeline.py      # FFprobe 探测 → FFmpeg filter_complex 拼接
+│   └── ffmpeg_pipeline.py      # FFprobe 探测 → FFmpeg 拼接 / MP4 规范化
 └── video_splicer/artifact.py   # 结果打包：单成功→MP4，单失败→CSV，多条→ZIP
 ```
 
@@ -34,6 +36,7 @@ app.py                          # Streamlit UI 入口，绝对导入
 - 自定义异常 `DownloadError` / `FFmpegError` 继承 `RuntimeError`，在 runner 层统一捕获转为 `TaskResult`
 - 每个任务有独立超时预算，通过 `_remaining_seconds()` 贯穿下载和 FFmpeg 阶段
 - 临时目录 `tempfile.mkdtemp(prefix="video_splice_")`，内含 `downloads/` 和 `outputs/`
+- 双功能页使用独立 `session_state` 键，避免结果、日志和下载按钮状态互相污染
 
 ## 构建与测试
 
@@ -47,28 +50,32 @@ streamlit run app.py
 # 运行测试（pytest.ini 设置 pythonpath = .）
 pytest
 
-# macOS 打包
+# macOS 打包（默认生成 .app 和 v2.0 ZIP）
 bash build_macos_app.sh
 ```
 
 ## 项目约定
 
-- **双输入优先级**：文本框有内容时忽略上传文件（参考 [input_parser.py](video_splicer/input_parser.py) `parse_split_inputs_with_errors()`）
-- **PID 去重命名**：重复 PID 用双下划线后缀 `pid__2.mp4`、`pid__3.mp4`（参考 `assign_output_filenames()`）
+- **双输入优先级**：文本框有内容时忽略上传文件（参考 `parse_split_inputs_with_errors()` / `parse_attachment_inputs_with_errors()`）
+- **拼接页命名**：输出文件按输入顺序生成 `1.mp4`、`2.mp4`、`3.mp4`（参考 `assign_output_filenames()`）
+- **附件页命名**：输出文件使用 `item_id.mp4`，重复值追加双下划线后缀 `item_id__2.mp4`、`item_id__3.mp4`（参考 `assign_attachment_output_filenames()`）
 - **"落版视频"（endcard）**：固定片尾拼接到每条源视频后，自动匹配分辨率（scale+pad）、音频格式（48kHz stereo），缺音轨补静音
+- **附件页 MP4 输出**：优先无损封装到 MP4，失败时回退 H.264/AAC 转码，确保扩展名和内容一致
 - **配置全部通过环境变量**，前缀 `SP_`，辅助函数 `_read_positive_int()` 做安全解析
+- **运行参数可网页调整**：`max_video_mb`、`max_workers`、`task_timeout_sec`、`download_retries` 在侧边栏提供业务友好中文配置项，生成运行时 `Config`
+- **网络访问前提**：如视频链接依赖 VPN，必须由运行应用的机器本身具备访问能力
 
 ## 测试约定
 
 - **纯函数/纯数据测试**，不使用 mock，不涉及 I/O
 - 仅使用 pytest 内建 fixture（`tmp_path`），无 `conftest.py`
 - 测试命名：`test_<被测行为的自然语言描述>()`，如 `test_text_input_has_priority_over_csv`
-- 用工厂函数快速构造测试数据（参考 [test_bitrate_policy.py](tests/test_bitrate_policy.py) 中的 `_probe()`）
+- 用工厂函数快速构造测试数据（参考 `tests/test_bitrate_policy.py` 中的 `_probe()`）
 - 所有测试函数带 `-> None` 返回类型注解
 
 ## 集成要点
 
 - **FFmpeg/FFprobe** 为外部系统依赖，macOS 下 `brew install ffmpeg`
 - HTTP 下载使用 `requests`，支持流式传输、重试、超时控制
-- PyInstaller 打包入口为 [launcher.py](launcher.py)，通过 `sys.frozen` / `sys._MEIPASS` 检测打包环境
-- Streamlit session state 键：`sp_results`、`sp_logs`、`sp_download`
+- PyInstaller 打包入口为 `launcher.py`，通过 `sys.frozen` / `sys._MEIPASS` 检测打包环境
+- Streamlit session state 键：`sp_splice_*`、`sp_attachment_*`
