@@ -1,4 +1,4 @@
-from .artifact import build_download_artifact, build_result_csv
+from .artifact import build_download_artifact, build_result_csv, save_results_directory
 from .config import (
     build_runtime_config,
     load_config,
@@ -26,6 +26,7 @@ __all__ = [
     "build_runtime_config",
     "build_download_artifact",
     "build_result_csv",
+    "save_results_directory",
     "load_config",
     "parse_attachment_inputs_with_errors",
     "parse_inputs",

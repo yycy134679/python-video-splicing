@@ -39,3 +39,4 @@ icon.iconset/
 *.zip
 result.csv
 
+.playwright-cli

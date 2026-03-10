@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 import streamlit as st
 
-from video_splicer.artifact import build_download_artifact, collect_work_dirs
+from video_splicer.artifact import build_download_artifact, collect_work_dirs, save_results_directory
 from video_splicer.config import (
     build_runtime_config,
     load_config,
@@ -17,13 +22,16 @@ from video_splicer.config import (
 from video_splicer.input_parser import (
     assign_attachment_output_filenames,
     assign_output_filenames,
+    build_attachment_input_preview,
+    build_split_input_preview,
+    count_non_empty_lines,
     parse_attachment_inputs_with_errors,
     parse_split_inputs_with_errors,
 )
-from video_splicer.models import Config, InputRow, ParseFailure, TaskResult
+from video_splicer.models import Config, InputPreview, InputRow, ParseFailure, TaskResult
 from video_splicer.runner import process_attachment_batch, process_batch
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 PAGE_SPLICE = "视频拼接"
 PAGE_ATTACHMENT = "视频链接转附件"
 RUNTIME_SETTING_KEYS = {
@@ -38,22 +46,26 @@ PageProcessor = Callable[
     list[TaskResult],
 ]
 FilenameAssigner = Callable[[list[InputRow]], dict[int, str]]
-
-
-def _failure_to_result(failure: ParseFailure) -> TaskResult:
-    return TaskResult(
-        index=failure.index,
-        pid=failure.pid_raw,
-        output_filename="",
-        status="FAILED",
-        error=failure.error,
-        duration_sec=0.0,
-        output_path=None,
-    )
+PreviewBuilder = Callable[[str, str, str | None, bytes | None], InputPreview]
 
 
 def _state_key(prefix: str, suffix: str) -> str:
     return f"{prefix}_{suffix}"
+
+
+def _build_input_signature(
+    identifier_text: str, video_url_text: str, upload_name: str | None, upload_bytes: bytes | None
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(identifier_text.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(video_url_text.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update((upload_name or "").encode("utf-8"))
+    hasher.update(b"\0")
+    if upload_bytes:
+        hasher.update(upload_bytes)
+    return hasher.hexdigest()
 
 
 def _ensure_page_state(prefix: str) -> None:
@@ -61,6 +73,11 @@ def _ensure_page_state(prefix: str) -> None:
         ("results", None),
         ("logs", []),
         ("download", None),
+        ("local_result_dir", None),
+        ("local_result_error", ""),
+        ("open_result_dir_error", ""),
+        ("preview", None),
+        ("preview_signature", ""),
     ):
         key = _state_key(prefix, suffix)
         if key not in st.session_state:
@@ -71,6 +88,107 @@ def _reset_page_state(prefix: str) -> None:
     st.session_state[_state_key(prefix, "results")] = None
     st.session_state[_state_key(prefix, "logs")] = []
     st.session_state[_state_key(prefix, "download")] = None
+    st.session_state[_state_key(prefix, "local_result_dir")] = None
+    st.session_state[_state_key(prefix, "local_result_error")] = ""
+    st.session_state[_state_key(prefix, "open_result_dir_error")] = ""
+
+
+def _sync_preview_state(prefix: str, current_signature: str) -> None:
+    preview_signature = str(st.session_state.get(_state_key(prefix, "preview_signature"), ""))
+    if preview_signature and preview_signature != current_signature:
+        _reset_page_state(prefix)
+        st.session_state[_state_key(prefix, "preview")] = None
+        st.session_state[_state_key(prefix, "preview_signature")] = ""
+
+
+def _store_preview(prefix: str, preview: InputPreview, signature: str) -> None:
+    st.session_state[_state_key(prefix, "preview")] = preview
+    st.session_state[_state_key(prefix, "preview_signature")] = signature
+
+
+def _get_current_preview(prefix: str, current_signature: str) -> InputPreview | None:
+    preview_signature = str(st.session_state.get(_state_key(prefix, "preview_signature"), ""))
+    if preview_signature != current_signature:
+        return None
+    return st.session_state.get(_state_key(prefix, "preview"))
+
+
+def _summarize_messages(messages: list[str], limit: int = 8) -> list[str]:
+    unique_messages: list[str] = []
+    seen_messages: set[str] = set()
+    for message in messages:
+        if message in seen_messages:
+            continue
+        seen_messages.add(message)
+        unique_messages.append(message)
+
+    if len(unique_messages) <= limit:
+        return unique_messages
+
+    remaining_count = len(unique_messages) - limit
+    return unique_messages[:limit] + [f"其余 {remaining_count} 条问题请先修正后再试。"]
+
+
+def _format_preview_error_text(preview: InputPreview) -> str:
+    messages = _summarize_messages(preview.blocking_errors)
+    return "当前数据校验未通过：\n- " + "\n- ".join(messages)
+
+
+def _format_parse_failure_messages(parse_failures: list[ParseFailure]) -> list[str]:
+    messages: list[str] = []
+    for failure in parse_failures:
+        if failure.error.startswith(("CSV 缺少必需表头", "Excel 缺少必需列", "Excel 解析失败", "不支持的文件类型")):
+            messages.append(failure.error)
+        else:
+            messages.append(f"第 {failure.index + 1} 条：{failure.error}")
+    return _summarize_messages(messages)
+
+
+def _render_preview_table(rows: list[dict[str, object]]) -> None:
+    preview_frame = pd.DataFrame(rows)
+    st.dataframe(
+        preview_frame,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "视频链接": st.column_config.LinkColumn("视频链接"),
+        },
+    )
+
+
+def _render_input_preview(preview: InputPreview, identifier_preview_label: str) -> None:
+    st.subheader("数据预览")
+
+    for notice in preview.notices:
+        st.info(notice)
+
+    if preview.blocking_errors:
+        st.error(_format_preview_error_text(preview))
+
+    if not preview.rows:
+        return
+
+    total_rows = len(preview.rows)
+    st.caption(
+        f"原始数据共 {total_rows} 条，{identifier_preview_label} {preview.identifier_count} 条，视频链接 {preview.video_url_count} 条。"
+    )
+
+    table_rows = [
+        {
+            "序号": row.index,
+            identifier_preview_label: row.pid_raw,
+            "视频链接": row.video_url,
+        }
+        for row in preview.rows
+    ]
+    if total_rows <= 10:
+        _render_preview_table(table_rows)
+        return
+
+    st.markdown("**前 5 条**")
+    _render_preview_table(table_rows[:5])
+    st.markdown("**后 5 条**")
+    _render_preview_table(table_rows[-5:])
 
 
 def _render_results(prefix: str, identifier_label: str) -> None:
@@ -80,6 +198,9 @@ def _render_results(prefix: str, identifier_label: str) -> None:
 
     logs: list[str] = st.session_state.get(_state_key(prefix, "logs"), [])
     download_obj: dict[str, bytes | str] | None = st.session_state.get(_state_key(prefix, "download"))
+    local_result_dir = st.session_state.get(_state_key(prefix, "local_result_dir"))
+    local_result_error = str(st.session_state.get(_state_key(prefix, "local_result_error"), ""))
+    open_result_error = str(st.session_state.get(_state_key(prefix, "open_result_dir_error"), ""))
 
     st.subheader("结果表")
     table_rows = [
@@ -105,6 +226,35 @@ def _render_results(prefix: str, identifier_label: str) -> None:
             mime=str(download_obj["mime"]),
             key=_state_key(prefix, "download_button"),
         )
+
+    if local_result_error:
+        st.error(local_result_error)
+
+    if local_result_dir:
+        st.caption(f"本次结果已保存到：{local_result_dir}")
+        if st.button("打开结果目录", key=_state_key(prefix, "open_result_dir_button")):
+            open_result_error = _open_result_directory(Path(str(local_result_dir))) or ""
+            st.session_state[_state_key(prefix, "open_result_dir_error")] = open_result_error
+
+        if open_result_error:
+            st.error(open_result_error)
+
+
+def _open_result_directory(result_dir: Path) -> str | None:
+    if not result_dir.is_dir():
+        return f"结果目录不存在：{result_dir}"
+
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(result_dir)], check=True)
+        elif os.name == "nt":
+            os.startfile(str(result_dir))  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", str(result_dir)], check=True)
+    except Exception as exc:  # noqa: BLE001
+        return f"打开结果目录失败：{exc}"
+
+    return None
 
 
 def _initialize_runtime_setting_state(config: Config) -> None:
@@ -220,6 +370,7 @@ def _process_page_request(
     filename_assigner: FilenameAssigner,
     runtime_errors: list[str],
     identifier_label: str,
+    result_dir_prefix: str,
     config: Config,
 ) -> None:
     _reset_page_state(prefix)
@@ -245,7 +396,9 @@ def _process_page_request(
         st.warning("请输入至少一条有效数据。")
         return
 
-    failure_results = [_failure_to_result(item) for item in parse_failures]
+    if parse_failures:
+        st.error("数据校验未通过：\n- " + "\n- ".join(_format_parse_failure_messages(parse_failures)))
+        return
 
     processed_results: list[TaskResult] = []
     if rows:
@@ -276,8 +429,22 @@ def _process_page_request(
     else:
         progress_cb(1, 1)
 
-    all_results = sorted(failure_results + processed_results, key=lambda item: item.index)
+    all_results = sorted(processed_results, key=lambda item: item.index)
     mime, file_name, payload = build_download_artifact(all_results, identifier_label=identifier_label)
+    local_result_dir: Path | None = None
+    local_result_error = ""
+
+    try:
+        local_result_dir = save_results_directory(
+            all_results,
+            results_root_dir=config.results_root_dir,
+            result_dir_prefix=result_dir_prefix,
+            identifier_label=identifier_label,
+        )
+        log_cb(f"结果已保存到本地目录: {local_result_dir}")
+    except Exception as exc:  # noqa: BLE001
+        local_result_error = f"本地结果保存失败：{exc}"
+        log_cb(local_result_error)
 
     for work_dir in collect_work_dirs(processed_results):
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -289,12 +456,16 @@ def _process_page_request(
         "file_name": file_name,
         "data": payload,
     }
+    st.session_state[_state_key(prefix, "local_result_dir")] = str(local_result_dir) if local_result_dir else None
+    st.session_state[_state_key(prefix, "local_result_error")] = local_result_error
+    st.session_state[_state_key(prefix, "open_result_dir_error")] = ""
 
 
 def _render_processing_page(
     prefix: str,
     page_title: str,
     identifier_label: str,
+    result_dir_prefix: str,
     identifier_input_label: str,
     identifier_placeholder: str,
     upload_label: str,
@@ -302,6 +473,7 @@ def _render_processing_page(
     parser: PageParser,
     processor: PageProcessor,
     filename_assigner: FilenameAssigner,
+    preview_builder: PreviewBuilder,
     runtime_errors: list[str],
     config_caption: str,
     config: Config,
@@ -324,6 +496,7 @@ def _render_processing_page(
             placeholder=identifier_placeholder,
             key=_state_key(prefix, "identifier_input"),
         )
+        st.caption(f"当前共 {count_non_empty_lines(identifier_text)} 条数据")
 
     with url_col:
         video_url_text = st.text_area(
@@ -336,15 +509,57 @@ def _render_processing_page(
             ),
             key=_state_key(prefix, "video_url_input"),
         )
+        st.caption(f"当前共 {count_non_empty_lines(video_url_text)} 条数据")
 
     uploaded_file = st.file_uploader(
         upload_label,
         type=["csv", "xlsx", "xlsm"],
         key=_state_key(prefix, "uploaded_file"),
     )
+    upload_bytes = uploaded_file.getvalue() if uploaded_file else None
+    upload_name = uploaded_file.name if uploaded_file else None
+    current_signature = _build_input_signature(identifier_text, video_url_text, upload_name, upload_bytes)
+    _sync_preview_state(prefix, current_signature)
 
-    start_clicked = st.button("开始处理", type="primary", key=_state_key(prefix, "start"))
+    has_text_input = bool(count_non_empty_lines(identifier_text) or count_non_empty_lines(video_url_text))
+    if uploaded_file and has_text_input:
+        st.info("已检测到文本输入，当前预览与处理会忽略上传文件。")
+    elif uploaded_file:
+        upload_preview = preview_builder("", "", upload_name, upload_bytes)
+        st.caption(
+            f"文件中共 {len(upload_preview.rows)} 条原始数据，"
+            f"{identifier_input_label.replace('（每行一条）', '')} {upload_preview.identifier_count} 条，"
+            f"视频链接 {upload_preview.video_url_count} 条。"
+        )
+
+    preview = _get_current_preview(prefix, current_signature)
+    button_col, start_col = st.columns(2)
+    with button_col:
+        preview_clicked = st.button("确认数据并预览", key=_state_key(prefix, "preview_button"))
+
+    if preview_clicked:
+        preview = preview_builder(identifier_text, video_url_text, upload_name, upload_bytes)
+        _store_preview(prefix, preview, current_signature)
+
+    can_start_processing = bool(preview and not preview.blocking_errors)
+    with start_col:
+        start_clicked = st.button(
+            "开始处理",
+            type="primary",
+            key=_state_key(prefix, "start"),
+            disabled=not can_start_processing,
+        )
+
+    if not can_start_processing:
+        st.caption("请先点击“确认数据并预览”，并确保当前数据校验通过后再开始处理。")
+
     if start_clicked:
+        preview = preview_builder(identifier_text, video_url_text, upload_name, upload_bytes)
+        _store_preview(prefix, preview, current_signature)
+        if preview.blocking_errors:
+            _reset_page_state(prefix)
+            _render_input_preview(preview, identifier_input_label.replace("（每行一条）", ""))
+            return
         _process_page_request(
             prefix=prefix,
             identifier_text=identifier_text,
@@ -355,8 +570,12 @@ def _render_processing_page(
             filename_assigner=filename_assigner,
             runtime_errors=runtime_errors,
             identifier_label=identifier_label,
+            result_dir_prefix=result_dir_prefix,
             config=config,
         )
+
+    if preview:
+        _render_input_preview(preview, identifier_input_label.replace("（每行一条）", ""))
 
     _render_results(prefix, identifier_label)
 
@@ -389,24 +608,57 @@ def _parse_attachment_inputs(
     )
 
 
+def _build_splice_preview(
+    identifier_text: str,
+    video_url_text: str,
+    upload_name: str | None,
+    upload_bytes: bytes | None,
+) -> InputPreview:
+    return build_split_input_preview(
+        pid_text=identifier_text,
+        video_url_text=video_url_text,
+        upload_file_name=upload_name,
+        upload_bytes=upload_bytes,
+    )
+
+
+def _build_attachment_preview(
+    identifier_text: str,
+    video_url_text: str,
+    upload_name: str | None,
+    upload_bytes: bytes | None,
+) -> InputPreview:
+    return build_attachment_input_preview(
+        item_id_text=identifier_text,
+        video_url_text=video_url_text,
+        upload_file_name=upload_name,
+        upload_bytes=upload_bytes,
+    )
+
+
 def _render_splice_page(config: Config) -> None:
     _render_processing_page(
         prefix="sp_splice",
         page_title="视频拼接",
         identifier_label="pid",
+        result_dir_prefix="splice",
         identifier_input_label="PID（每行一条）",
         identifier_placeholder="demo001\ndemo001\ndemo002",
         upload_label="可选文件上传（CSV: pid,video_url；Excel: 商品id,视频链接）",
         instruction_lines=[
             "- 左侧输入 `pid`，右侧输入 `video_url`，按行一一对应",
             "- 任一文本框存在非空行时，会忽略上传文件",
+            "- 输入后可先点击“确认数据并预览”，查看总条数及前 5 条/后 5 条原始数据",
+            "- 手动输入两列条数不一致，或存在非法链接时，会阻止开始处理",
             "- 上传 Excel 时自动读取列：`商品id`、`视频链接`（空链接行自动忽略）",
             "- 仅支持公开 `http/https` 链接",
             "- 输出文件按输入顺序命名为 `1.mp4`、`2.mp4`、`3.mp4`...",
+            "- 处理完成后会同步保存到本机下载目录下的独立结果文件夹，并支持直接打开结果目录",
         ],
         parser=_parse_splice_inputs,
         processor=process_batch,
         filename_assigner=assign_output_filenames,
+        preview_builder=_build_splice_preview,
         runtime_errors=validate_splice_runtime(config),
         config_caption=_build_runtime_summary(config, include_endcard=True),
         config=config,
@@ -418,20 +670,25 @@ def _render_attachment_page(config: Config) -> None:
         prefix="sp_attachment",
         page_title="视频链接转附件",
         identifier_label="item_id",
+        result_dir_prefix="attachment",
         identifier_input_label="Item ID（每行一条）",
         identifier_placeholder="item001\nitem001\nitem002",
         upload_label="可选文件上传（CSV: item_id,video_url；兼容 pid,video_url；Excel: 商品id,视频链接）",
         instruction_lines=[
             "- 左侧输入 `item_id`，右侧输入 `video_url`，按行一一对应",
             "- 任一文本框存在非空行时，会忽略上传文件",
+            "- 输入后可先点击“确认数据并预览”，查看总条数及前 5 条/后 5 条原始数据",
+            "- 手动输入两列条数不一致，或文件里存在非法数据时，会阻止开始处理",
             "- 上传 CSV 时支持列：`item_id`、`video_url`，也兼容旧格式 `pid`、`video_url`",
             "- 上传 Excel 时自动读取列：`商品id`、`视频链接`（空链接行自动忽略）",
             "- 输出文件固定为 `item_id.mp4`，重复 `item_id` 自动追加 `__2`、`__3` 后缀",
             "- 下载能力取决于运行当前应用机器的网络环境；如目标链接需 VPN，则运行机器也必须可访问",
+            "- 处理完成后会同步保存到本机下载目录下的独立结果文件夹，并支持直接打开结果目录",
         ],
         parser=_parse_attachment_inputs,
         processor=process_attachment_batch,
         filename_assigner=assign_attachment_output_filenames,
+        preview_builder=_build_attachment_preview,
         runtime_errors=validate_attachment_runtime(),
         config_caption=_build_runtime_summary(config, output_label="输出格式 MP4"),
         config=config,

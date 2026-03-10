@@ -19,7 +19,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 APP_NAME="视频拼接工具"
-APP_VERSION="2.0"
+APP_VERSION="2.1"
 BUNDLE_ID="com.bytedance.video-splicer"
 APP_DIR="dist/${APP_NAME}.app"
 ZIP_PATH="dist/${APP_NAME}-v${APP_VERSION}.zip"

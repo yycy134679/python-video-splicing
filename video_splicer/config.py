@@ -11,6 +11,7 @@ from .models import Config
 DEFAULT_ENDCARD_PATH = Path(
     "/Users/bytedance/Documents/Code/python-video-splicing/assets/video/endcard.mp4"
 )
+DEFAULT_RESULTS_ROOT_DIR = Path.home() / "Downloads" / "video-splicer-results"
 
 
 def _read_positive_int(env_name: str, default: int) -> int:
@@ -26,8 +27,10 @@ def _read_positive_int(env_name: str, default: int) -> int:
 
 def load_config() -> Config:
     endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
+    results_root_dir = Path(os.getenv("SP_RESULTS_ROOT_DIR", str(DEFAULT_RESULTS_ROOT_DIR))).expanduser()
     return Config(
         endcard_path=endcard_path,
+        results_root_dir=results_root_dir,
         max_video_mb=_read_positive_int("SP_MAX_VIDEO_MB", 50),
         max_workers=_read_positive_int("SP_MAX_WORKERS", 4),
         task_timeout_sec=_read_positive_int("SP_TASK_TIMEOUT_SEC", 180),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from video_splicer.config import build_runtime_config, validate_attachment_runtime, validate_splice_runtime
+from video_splicer.config import build_runtime_config, load_config, validate_attachment_runtime, validate_splice_runtime
 from video_splicer.models import Config
 
 
@@ -33,3 +33,19 @@ def test_build_runtime_config_uses_web_overrides() -> None:
     assert runtime_config.max_workers == 6
     assert runtime_config.task_timeout_sec == 300
     assert runtime_config.download_retries == 4
+
+
+def test_load_config_uses_default_results_root_dir(monkeypatch) -> None:
+    monkeypatch.delenv("SP_RESULTS_ROOT_DIR", raising=False)
+
+    config = load_config()
+
+    assert config.results_root_dir == Path.home() / "Downloads" / "video-splicer-results"
+
+
+def test_load_config_allows_results_root_dir_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SP_RESULTS_ROOT_DIR", str(tmp_path / "custom-results"))
+
+    config = load_config()
+
+    assert config.results_root_dir == tmp_path / "custom-results"
