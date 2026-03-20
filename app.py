@@ -36,6 +36,7 @@ from video_splicer.runner import process_attachment_batch, process_batch
 APP_VERSION = "2.1"
 PAGE_SPLICE = "视频拼接"
 PAGE_ATTACHMENT = "视频链接转附件"
+ENDCARD_PREVIEW_QUERY_KEY = "endcard_preview"
 RUNTIME_SETTING_KEYS = {
     "max_video_mb": "sp_runtime_max_video_mb",
     "max_workers": "sp_runtime_max_workers",
@@ -100,8 +101,6 @@ def _ensure_endcard_state() -> None:
         st.session_state["sp_endcard_feedback"] = ""
     if "sp_endcard_error" not in st.session_state:
         st.session_state["sp_endcard_error"] = ""
-    if "sp_endcard_show_preview" not in st.session_state:
-        st.session_state["sp_endcard_show_preview"] = False
     if "sp_endcard_show_uploader" not in st.session_state:
         st.session_state["sp_endcard_show_uploader"] = False
 
@@ -284,38 +283,45 @@ def _format_last_modified(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
-def _set_endcard_panel_state(*, show_preview: bool, show_uploader: bool) -> None:
-    st.session_state["sp_endcard_show_preview"] = show_preview
-    st.session_state["sp_endcard_show_uploader"] = show_uploader
+def _default_endcard_path() -> Path:
+    return Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
 
 
-def _toggle_endcard_panel(panel: str) -> None:
-    show_preview = bool(st.session_state.get("sp_endcard_show_preview", False))
-    show_uploader = bool(st.session_state.get("sp_endcard_show_uploader", False))
-
-    if panel == "preview":
-        _set_endcard_panel_state(show_preview=not show_preview, show_uploader=False)
-        return
-
-    if panel == "uploader":
-        _set_endcard_panel_state(show_preview=False, show_uploader=not show_uploader)
+def _resolve_current_endcard_asset() -> EndcardAsset:
+    return resolve_active_endcard(default_endcard=_default_endcard_path())
 
 
-def _render_endcard_preview_panel(asset: EndcardAsset) -> None:
-    with st.container(border=True):
-        meta_col, preview_col = st.columns([1.0, 1.8])
+def _preview_endcard_url() -> str:
+    return f"?{ENDCARD_PREVIEW_QUERY_KEY}=1"
 
-        with meta_col:
-            st.caption("当前落版预览")
-            st.markdown(f"**文件格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
-            st.markdown(f"**文件大小：** {_format_file_size(asset.size_bytes)}")
-            st.caption("点击上方“预览落版”可收起。")
 
-        with preview_col:
-            if asset.path.is_file():
-                st.video(asset.path.read_bytes(), format=asset.mime_type)
-            else:
-                st.warning(f"当前落版视频不存在：{asset.path}")
+def _is_endcard_preview_mode() -> bool:
+    raw_value = st.query_params.get(ENDCARD_PREVIEW_QUERY_KEY, "")
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else ""
+    return str(raw_value) == "1"
+
+
+def _render_endcard_preview_page() -> None:
+    asset = _resolve_current_endcard_asset()
+    st.title("落版预览")
+    st.caption("关闭当前标签页或返回主页面，即可继续处理拼接任务。")
+    st.link_button("打开主页面", url="./", use_container_width=False)
+
+    meta_col, preview_col = st.columns([0.9, 2.1])
+
+    with meta_col:
+        st.markdown(f"**当前落版：** {'已上传' if asset.source == 'MANAGED' else '默认'}")
+        st.markdown(f"**文件：** `{asset.file_name}`")
+        st.markdown(f"**格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
+        st.markdown(f"**大小：** {_format_file_size(asset.size_bytes)}")
+        st.markdown(f"**更新：** {_format_last_modified(asset.path)}")
+
+    with preview_col:
+        if asset.path.is_file():
+            st.video(asset.path.read_bytes(), format=asset.mime_type)
+        else:
+            st.warning(f"当前落版视频不存在：{asset.path}")
 
 
 def _render_endcard_upload_panel() -> None:
@@ -351,7 +357,7 @@ def _render_endcard_upload_panel() -> None:
         else:
             st.session_state["sp_endcard_error"] = ""
             st.session_state["sp_endcard_feedback"] = "新落版已保存，后续新发起的拼接任务将使用该文件。"
-            _set_endcard_panel_state(show_preview=False, show_uploader=False)
+            st.session_state["sp_endcard_show_uploader"] = False
             st.rerun()
 
 
@@ -359,8 +365,7 @@ def _render_endcard_manager() -> None:
     _ensure_endcard_state()
     feedback_message = str(st.session_state.get("sp_endcard_feedback", ""))
     error_message = str(st.session_state.get("sp_endcard_error", ""))
-    default_endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
-    asset = resolve_active_endcard(default_endcard=default_endcard_path)
+    asset = _resolve_current_endcard_asset()
 
     if feedback_message:
         st.success(feedback_message)
@@ -378,21 +383,15 @@ def _render_endcard_manager() -> None:
         )
 
     with preview_button_col:
-        preview_clicked = st.button("预览落版", use_container_width=True, key="sp_endcard_preview_toggle")
+        st.link_button("预览落版", url=_preview_endcard_url(), use_container_width=True)
 
     with upload_button_col:
         uploader_clicked = st.button("更换落版", use_container_width=True, key="sp_endcard_uploader_toggle")
 
-    if preview_clicked:
-        _toggle_endcard_panel("preview")
     if uploader_clicked:
-        _toggle_endcard_panel("uploader")
+        st.session_state["sp_endcard_show_uploader"] = not bool(st.session_state.get("sp_endcard_show_uploader", False))
 
-    show_preview = bool(st.session_state.get("sp_endcard_show_preview", False))
     show_uploader = bool(st.session_state.get("sp_endcard_show_uploader", False))
-
-    if show_preview:
-        _render_endcard_preview_panel(asset)
 
     if show_uploader:
         _render_endcard_upload_panel()
@@ -842,16 +841,19 @@ def _render_attachment_page(config: Config) -> None:
 
 
 st.set_page_config(page_title=f"视频拼接工具 v{APP_VERSION}", layout="wide")
-st.title(f"Python + Streamlit 视频工具 v{APP_VERSION}")
-
-base_config = load_config()
-
-with st.sidebar:
-    st.caption(f"App Version {APP_VERSION}")
-    selected_page = st.radio("功能页", [PAGE_SPLICE, PAGE_ATTACHMENT], label_visibility="visible")
-    config = _render_runtime_settings(base_config)
-
-if selected_page == PAGE_SPLICE:
-    _render_splice_page(config)
+if _is_endcard_preview_mode():
+    _render_endcard_preview_page()
 else:
-    _render_attachment_page(config)
+    st.title(f"Python + Streamlit 视频工具 v{APP_VERSION}")
+
+    base_config = load_config()
+
+    with st.sidebar:
+        st.caption(f"App Version {APP_VERSION}")
+        selected_page = st.radio("功能页", [PAGE_SPLICE, PAGE_ATTACHMENT], label_visibility="visible")
+        config = _render_runtime_settings(base_config)
+
+    if selected_page == PAGE_SPLICE:
+        _render_splice_page(config)
+    else:
+        _render_attachment_page(config)
