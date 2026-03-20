@@ -49,3 +49,20 @@ def test_load_config_allows_results_root_dir_override(monkeypatch, tmp_path: Pat
     config = load_config()
 
     assert config.results_root_dir == tmp_path / "custom-results"
+
+
+def test_load_config_prefers_managed_endcard(monkeypatch, tmp_path: Path) -> None:
+    default_endcard = tmp_path / "assets" / "video" / "endcard.mp4"
+    managed_dir = tmp_path / "managed-endcard"
+    managed_file = managed_dir / "current-endcard.mp4"
+    default_endcard.parent.mkdir(parents=True)
+    managed_dir.mkdir(parents=True)
+    default_endcard.write_bytes(b"default")
+    managed_file.write_bytes(b"managed")
+
+    monkeypatch.setattr("video_splicer.config.DEFAULT_ENDCARD_PATH", default_endcard)
+    monkeypatch.setattr("video_splicer.endcard_store.DEFAULT_MANAGED_ENDCARD_DIR", managed_dir)
+
+    config = load_config()
+
+    assert config.endcard_path == managed_file

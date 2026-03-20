@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 
+from .endcard_store import resolve_active_endcard
 from .models import Config
 
 
@@ -26,7 +27,8 @@ def _read_positive_int(env_name: str, default: int) -> int:
 
 
 def load_config() -> Config:
-    endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
+    default_endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
+    endcard_path = resolve_active_endcard(default_endcard=default_endcard_path).path
     results_root_dir = Path(os.getenv("SP_RESULTS_ROOT_DIR", str(DEFAULT_RESULTS_ROOT_DIR))).expanduser()
     return Config(
         endcard_path=endcard_path,
