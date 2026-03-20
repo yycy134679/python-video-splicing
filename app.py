@@ -21,7 +21,12 @@ from video_splicer.config import (
     validate_attachment_runtime,
     validate_splice_runtime,
 )
-from video_splicer.endcard_store import EndcardAsset, EndcardUploadError, replace_endcard_upload, resolve_active_endcard
+from video_splicer.endcard_store import EndcardAsset, resolve_active_endcard
+from video_splicer.endcard_ui import (
+    build_endcard_upload_trigger_html,
+    build_endcard_upload_widget_key,
+    save_endcard_upload,
+)
 from video_splicer.input_parser import (
     assign_attachment_output_filenames,
     assign_output_filenames,
@@ -101,8 +106,8 @@ def _ensure_endcard_state() -> None:
         st.session_state["sp_endcard_feedback"] = ""
     if "sp_endcard_error" not in st.session_state:
         st.session_state["sp_endcard_error"] = ""
-    if "sp_endcard_show_uploader" not in st.session_state:
-        st.session_state["sp_endcard_show_uploader"] = False
+    if "sp_endcard_upload_widget_version" not in st.session_state:
+        st.session_state["sp_endcard_upload_widget_version"] = 0
 
 
 def _sync_preview_state(prefix: str, current_signature: str) -> None:
@@ -305,41 +310,27 @@ def _build_endcard_media_url(asset: EndcardAsset) -> str | None:
     )
 
 
-def _render_endcard_upload_panel() -> None:
-    with st.container(border=True):
-        st.caption("支持 mp4、mov，上传后仅影响后续新发起的拼接任务。")
-        uploaded_endcard = st.file_uploader(
-            "上传新的落版视频",
-            type=["mp4", "mov"],
-            key="sp_endcard_upload_file",
-            help="仅支持 mp4 和 mov，上传成功后会覆盖当前生效的落版视频。",
-        )
-        upload_clicked = st.button("上传并立即生效", type="primary", use_container_width=True, key="sp_endcard_upload")
+def _render_hidden_endcard_uploader() -> None:
+    widget_version = int(st.session_state.get("sp_endcard_upload_widget_version", 0))
+    uploaded_endcard = st.file_uploader(
+        "上传新的落版视频",
+        type=["mp4", "mov"],
+        key=build_endcard_upload_widget_key(widget_version),
+        help="仅支持 mp4 和 mov，上传成功后会覆盖当前生效的落版视频。",
+        label_visibility="collapsed",
+    )
 
-        if not upload_clicked:
-            return
+    if uploaded_endcard is None:
+        return
 
-        if uploaded_endcard is None:
-            st.session_state["sp_endcard_feedback"] = ""
-            st.session_state["sp_endcard_error"] = "请先选择一个 mp4 或 mov 落版视频。"
-            return
-
-        try:
-            replace_endcard_upload(
-                upload_name=uploaded_endcard.name,
-                upload_bytes=uploaded_endcard.getvalue(),
-            )
-        except EndcardUploadError as exc:
-            st.session_state["sp_endcard_feedback"] = ""
-            st.session_state["sp_endcard_error"] = str(exc)
-        except Exception as exc:  # noqa: BLE001
-            st.session_state["sp_endcard_feedback"] = ""
-            st.session_state["sp_endcard_error"] = f"落版视频保存失败：{exc}"
-        else:
-            st.session_state["sp_endcard_error"] = ""
-            st.session_state["sp_endcard_feedback"] = "新落版已保存，后续新发起的拼接任务将使用该文件。"
-            st.session_state["sp_endcard_show_uploader"] = False
-            st.rerun()
+    feedback_message, error_message = save_endcard_upload(
+        upload_name=uploaded_endcard.name,
+        upload_bytes=uploaded_endcard.getvalue(),
+    )
+    st.session_state["sp_endcard_feedback"] = feedback_message
+    st.session_state["sp_endcard_error"] = error_message
+    st.session_state["sp_endcard_upload_widget_version"] = widget_version + 1
+    st.rerun()
 
 
 def _render_endcard_manager() -> None:
@@ -368,15 +359,9 @@ def _render_endcard_manager() -> None:
         st.link_button("预览落版", url=preview_url or "#", use_container_width=True, disabled=preview_url is None)
 
     with upload_button_col:
-        uploader_clicked = st.button("更换落版", use_container_width=True, key="sp_endcard_uploader_toggle")
+        st.html(build_endcard_upload_trigger_html(), unsafe_allow_javascript=True)
 
-    if uploader_clicked:
-        st.session_state["sp_endcard_show_uploader"] = not bool(st.session_state.get("sp_endcard_show_uploader", False))
-
-    show_uploader = bool(st.session_state.get("sp_endcard_show_uploader", False))
-
-    if show_uploader:
-        _render_endcard_upload_panel()
+    _render_hidden_endcard_uploader()
 
 
 def _initialize_runtime_setting_state(config: Config) -> None:

@@ -6,7 +6,14 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from video_splicer.endcard_ui import (
+    ENDCARD_UPLOAD_SUCCESS_MESSAGE,
+    build_endcard_upload_trigger_html,
+    build_endcard_upload_widget_key,
+    save_endcard_upload,
+)
 import video_splicer.endcard_store as endcard_store_module
+from video_splicer.endcard_store import EndcardUploadError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -50,9 +57,8 @@ def test_splice_page_shows_compact_endcard_summary_by_default(monkeypatch, tmp_p
 
     assert [item.value for item in app_test.subheader] == ["视频拼接"]
     assert "预览落版" in _link_button_labels(app_test)
-    assert "更换落版" in _button_labels(app_test)
     assert "上传并立即生效" not in _button_labels(app_test)
-    assert "上传新的落版视频" not in _uploader_labels(app_test)
+    assert "上传新的落版视频" in _uploader_labels(app_test)
     assert len(app_test.get("video")) == 0
     preview_link = next(item for item in app_test.get("link_button") if item.proto.label == "预览落版")
     assert "/media/" in preview_link.proto.url
@@ -87,12 +93,46 @@ def test_preview_link_switches_to_mov_media_url_after_reupload(monkeypatch, tmp_
     assert managed_link.proto.url != default_link.proto.url
 
 
-def test_replace_button_expands_uploader_only(monkeypatch, tmp_path: Path) -> None:
+def test_hidden_endcard_uploader_is_mounted_without_extra_confirm_step(monkeypatch, tmp_path: Path) -> None:
     app_test = _build_app_test(monkeypatch, tmp_path)
 
     app_test.run(timeout=10)
-    app_test = next(button for button in app_test.button if button.label == "更换落版").click().run(timeout=10)
+    endcard_uploaders = [item for item in app_test.get("file_uploader") if item.proto.label == "上传新的落版视频"]
 
     assert len(app_test.get("video")) == 0
-    assert "上传新的落版视频" in _uploader_labels(app_test)
-    assert "上传并立即生效" in _button_labels(app_test)
+    assert len(endcard_uploaders) == 1
+    assert build_endcard_upload_widget_key(0) in endcard_uploaders[0].proto.id
+    assert "上传并立即生效" not in _button_labels(app_test)
+
+
+def test_build_endcard_upload_trigger_html_contains_picker_script() -> None:
+    html = build_endcard_upload_trigger_html()
+
+    assert "更换落版" in html
+    assert "MutationObserver" in html
+    assert "uploaderInput.click()" in html
+    assert "input[type=\"file\"][accept*=\".mov\"]" in html
+
+
+def test_save_endcard_upload_returns_success_message() -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_replace(*, upload_name: str, upload_bytes: bytes) -> None:
+        recorded["upload_name"] = upload_name
+        recorded["upload_bytes"] = upload_bytes
+
+    feedback, error = save_endcard_upload("fresh.mov", b"mov-bytes", replace_upload_fn=fake_replace)
+
+    assert feedback == ENDCARD_UPLOAD_SUCCESS_MESSAGE
+    assert error == ""
+    assert recorded == {"upload_name": "fresh.mov", "upload_bytes": b"mov-bytes"}
+
+
+def test_save_endcard_upload_returns_domain_error() -> None:
+    def fake_replace(*, upload_name: str, upload_bytes: bytes) -> None:
+        raise EndcardUploadError("文件格式无效")
+
+    feedback, error = save_endcard_upload("broken.mov", b"broken", replace_upload_fn=fake_replace)
+
+    assert feedback == ""
+    assert error == "文件格式无效"
