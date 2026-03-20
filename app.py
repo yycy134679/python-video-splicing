@@ -100,6 +100,10 @@ def _ensure_endcard_state() -> None:
         st.session_state["sp_endcard_feedback"] = ""
     if "sp_endcard_error" not in st.session_state:
         st.session_state["sp_endcard_error"] = ""
+    if "sp_endcard_show_preview" not in st.session_state:
+        st.session_state["sp_endcard_show_preview"] = False
+    if "sp_endcard_show_uploader" not in st.session_state:
+        st.session_state["sp_endcard_show_uploader"] = False
 
 
 def _sync_preview_state(prefix: str, current_signature: str) -> None:
@@ -277,26 +281,46 @@ def _format_file_size(size_bytes: int) -> str:
 def _format_last_modified(path: Path) -> str:
     if not path.is_file():
         return "未找到文件"
-    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
-def _render_endcard_asset_summary(asset: EndcardAsset) -> None:
-    status_label = "已上传落版视频" if asset.source == "MANAGED" else "默认落版视频"
-    info_col, upload_col = st.columns([1.2, 1.0])
+def _set_endcard_panel_state(*, show_preview: bool, show_uploader: bool) -> None:
+    st.session_state["sp_endcard_show_preview"] = show_preview
+    st.session_state["sp_endcard_show_uploader"] = show_uploader
 
-    with info_col:
-        st.markdown(f"**当前来源：** {status_label}")
-        st.markdown(f"**当前文件：** `{asset.file_name}`")
-        st.markdown(f"**文件格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
-        st.markdown(f"**文件大小：** {_format_file_size(asset.size_bytes)}")
-        st.markdown(f"**最后更新时间：** {_format_last_modified(asset.path)}")
-        st.caption("上传成功后会立即影响后续新发起的拼接任务，正在处理的批次不会切换。")
-        if asset.path.is_file():
-            st.video(asset.path.read_bytes(), format=asset.mime_type)
-        else:
-            st.warning(f"当前落版视频不存在：{asset.path}")
 
-    with upload_col:
+def _toggle_endcard_panel(panel: str) -> None:
+    show_preview = bool(st.session_state.get("sp_endcard_show_preview", False))
+    show_uploader = bool(st.session_state.get("sp_endcard_show_uploader", False))
+
+    if panel == "preview":
+        _set_endcard_panel_state(show_preview=not show_preview, show_uploader=False)
+        return
+
+    if panel == "uploader":
+        _set_endcard_panel_state(show_preview=False, show_uploader=not show_uploader)
+
+
+def _render_endcard_preview_panel(asset: EndcardAsset) -> None:
+    with st.container(border=True):
+        meta_col, preview_col = st.columns([1.0, 1.8])
+
+        with meta_col:
+            st.caption("当前落版预览")
+            st.markdown(f"**文件格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
+            st.markdown(f"**文件大小：** {_format_file_size(asset.size_bytes)}")
+            st.caption("点击上方“预览落版”可收起。")
+
+        with preview_col:
+            if asset.path.is_file():
+                st.video(asset.path.read_bytes(), format=asset.mime_type)
+            else:
+                st.warning(f"当前落版视频不存在：{asset.path}")
+
+
+def _render_endcard_upload_panel() -> None:
+    with st.container(border=True):
+        st.caption("支持 mp4、mov，上传后仅影响后续新发起的拼接任务。")
         uploaded_endcard = st.file_uploader(
             "上传新的落版视频",
             type=["mp4", "mov"],
@@ -305,26 +329,30 @@ def _render_endcard_asset_summary(asset: EndcardAsset) -> None:
         )
         upload_clicked = st.button("上传并立即生效", type="primary", use_container_width=True, key="sp_endcard_upload")
 
-        if upload_clicked:
-            if uploaded_endcard is None:
-                st.session_state["sp_endcard_feedback"] = ""
-                st.session_state["sp_endcard_error"] = "请先选择一个 mp4 或 mov 落版视频。"
-            else:
-                try:
-                    replace_endcard_upload(
-                        upload_name=uploaded_endcard.name,
-                        upload_bytes=uploaded_endcard.getvalue(),
-                    )
-                except EndcardUploadError as exc:
-                    st.session_state["sp_endcard_feedback"] = ""
-                    st.session_state["sp_endcard_error"] = str(exc)
-                except Exception as exc:  # noqa: BLE001
-                    st.session_state["sp_endcard_feedback"] = ""
-                    st.session_state["sp_endcard_error"] = f"落版视频保存失败：{exc}"
-                else:
-                    st.session_state["sp_endcard_error"] = ""
-                    st.session_state["sp_endcard_feedback"] = "新落版已保存，后续新发起的拼接任务将使用该文件。"
-                    st.rerun()
+        if not upload_clicked:
+            return
+
+        if uploaded_endcard is None:
+            st.session_state["sp_endcard_feedback"] = ""
+            st.session_state["sp_endcard_error"] = "请先选择一个 mp4 或 mov 落版视频。"
+            return
+
+        try:
+            replace_endcard_upload(
+                upload_name=uploaded_endcard.name,
+                upload_bytes=uploaded_endcard.getvalue(),
+            )
+        except EndcardUploadError as exc:
+            st.session_state["sp_endcard_feedback"] = ""
+            st.session_state["sp_endcard_error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            st.session_state["sp_endcard_feedback"] = ""
+            st.session_state["sp_endcard_error"] = f"落版视频保存失败：{exc}"
+        else:
+            st.session_state["sp_endcard_error"] = ""
+            st.session_state["sp_endcard_feedback"] = "新落版已保存，后续新发起的拼接任务将使用该文件。"
+            _set_endcard_panel_state(show_preview=False, show_uploader=False)
+            st.rerun()
 
 
 def _render_endcard_manager() -> None:
@@ -334,7 +362,6 @@ def _render_endcard_manager() -> None:
     default_endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
     asset = resolve_active_endcard(default_endcard=default_endcard_path)
 
-    st.subheader("落版视频管理")
     if feedback_message:
         st.success(feedback_message)
         st.session_state["sp_endcard_feedback"] = ""
@@ -342,8 +369,33 @@ def _render_endcard_manager() -> None:
         st.error(error_message)
         st.session_state["sp_endcard_error"] = ""
 
-    _render_endcard_asset_summary(asset)
-    st.markdown("---")
+    summary_col, preview_button_col, upload_button_col = st.columns([4.6, 1.1, 1.1])
+
+    with summary_col:
+        status_label = "已上传" if asset.source == "MANAGED" else "默认"
+        st.markdown(
+            f"**当前落版：** {status_label}  |  **文件：** `{asset.file_name}`  |  **更新：** {_format_last_modified(asset.path)}"
+        )
+
+    with preview_button_col:
+        preview_clicked = st.button("预览落版", use_container_width=True, key="sp_endcard_preview_toggle")
+
+    with upload_button_col:
+        uploader_clicked = st.button("更换落版", use_container_width=True, key="sp_endcard_uploader_toggle")
+
+    if preview_clicked:
+        _toggle_endcard_panel("preview")
+    if uploader_clicked:
+        _toggle_endcard_panel("uploader")
+
+    show_preview = bool(st.session_state.get("sp_endcard_show_preview", False))
+    show_uploader = bool(st.session_state.get("sp_endcard_show_uploader", False))
+
+    if show_preview:
+        _render_endcard_preview_panel(asset)
+
+    if show_uploader:
+        _render_endcard_upload_panel()
 
 
 def _initialize_runtime_setting_state(config: Config) -> None:
@@ -566,11 +618,14 @@ def _render_processing_page(
     runtime_errors: list[str],
     config_caption: str,
     config: Config,
+    header_renderer: Callable[[], None] | None = None,
 ) -> None:
     _ensure_page_state(prefix)
 
     st.subheader(page_title)
     st.caption(config_caption)
+    if header_renderer:
+        header_renderer()
     if runtime_errors:
         st.error("运行前置检查未通过：\n- " + "\n- ".join(runtime_errors))
 
@@ -726,7 +781,6 @@ def _build_attachment_preview(
 
 
 def _render_splice_page(config: Config) -> None:
-    _render_endcard_manager()
     _render_processing_page(
         prefix="sp_splice",
         page_title="视频拼接",
@@ -752,6 +806,7 @@ def _render_splice_page(config: Config) -> None:
         runtime_errors=validate_splice_runtime(config),
         config_caption=_build_runtime_summary(config, include_endcard=True),
         config=config,
+        header_renderer=_render_endcard_manager,
     )
 
 
@@ -782,6 +837,7 @@ def _render_attachment_page(config: Config) -> None:
         runtime_errors=validate_attachment_runtime(),
         config_caption=_build_runtime_summary(config, output_label="输出格式 MP4"),
         config=config,
+        header_renderer=None,
     )
 
 
