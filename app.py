@@ -11,6 +11,7 @@ from typing import Callable
 
 import pandas as pd
 import streamlit as st
+import streamlit.runtime as st_runtime
 
 from video_splicer.artifact import build_download_artifact, collect_work_dirs, save_results_directory
 from video_splicer.config import (
@@ -36,7 +37,6 @@ from video_splicer.runner import process_attachment_batch, process_batch
 APP_VERSION = "2.1"
 PAGE_SPLICE = "视频拼接"
 PAGE_ATTACHMENT = "视频链接转附件"
-ENDCARD_PREVIEW_QUERY_KEY = "endcard_preview"
 RUNTIME_SETTING_KEYS = {
     "max_video_mb": "sp_runtime_max_video_mb",
     "max_workers": "sp_runtime_max_workers",
@@ -291,37 +291,18 @@ def _resolve_current_endcard_asset() -> EndcardAsset:
     return resolve_active_endcard(default_endcard=_default_endcard_path())
 
 
-def _preview_endcard_url() -> str:
-    return f"?{ENDCARD_PREVIEW_QUERY_KEY}=1"
+def _build_endcard_media_url(asset: EndcardAsset) -> str | None:
+    if not asset.path.is_file():
+        return None
+    if not st_runtime.exists():
+        return None
 
-
-def _is_endcard_preview_mode() -> bool:
-    raw_value = st.query_params.get(ENDCARD_PREVIEW_QUERY_KEY, "")
-    if isinstance(raw_value, list):
-        raw_value = raw_value[0] if raw_value else ""
-    return str(raw_value) == "1"
-
-
-def _render_endcard_preview_page() -> None:
-    asset = _resolve_current_endcard_asset()
-    st.title("落版预览")
-    st.caption("关闭当前标签页或返回主页面，即可继续处理拼接任务。")
-    st.link_button("打开主页面", url="./", use_container_width=False)
-
-    meta_col, preview_col = st.columns([0.9, 2.1])
-
-    with meta_col:
-        st.markdown(f"**当前落版：** {'已上传' if asset.source == 'MANAGED' else '默认'}")
-        st.markdown(f"**文件：** `{asset.file_name}`")
-        st.markdown(f"**格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
-        st.markdown(f"**大小：** {_format_file_size(asset.size_bytes)}")
-        st.markdown(f"**更新：** {_format_last_modified(asset.path)}")
-
-    with preview_col:
-        if asset.path.is_file():
-            st.video(asset.path.read_bytes(), format=asset.mime_type)
-        else:
-            st.warning(f"当前落版视频不存在：{asset.path}")
+    return st_runtime.get_instance().media_file_mgr.add(
+        str(asset.path),
+        asset.mime_type,
+        coordinates="endcard-preview-link",
+        file_name=asset.file_name,
+    )
 
 
 def _render_endcard_upload_panel() -> None:
@@ -383,7 +364,8 @@ def _render_endcard_manager() -> None:
         )
 
     with preview_button_col:
-        st.link_button("预览落版", url=_preview_endcard_url(), use_container_width=True)
+        preview_url = _build_endcard_media_url(asset)
+        st.link_button("预览落版", url=preview_url or "#", use_container_width=True, disabled=preview_url is None)
 
     with upload_button_col:
         uploader_clicked = st.button("更换落版", use_container_width=True, key="sp_endcard_uploader_toggle")
@@ -841,19 +823,16 @@ def _render_attachment_page(config: Config) -> None:
 
 
 st.set_page_config(page_title=f"视频拼接工具 v{APP_VERSION}", layout="wide")
-if _is_endcard_preview_mode():
-    _render_endcard_preview_page()
+st.title(f"Python + Streamlit 视频工具 v{APP_VERSION}")
+
+base_config = load_config()
+
+with st.sidebar:
+    st.caption(f"App Version {APP_VERSION}")
+    selected_page = st.radio("功能页", [PAGE_SPLICE, PAGE_ATTACHMENT], label_visibility="visible")
+    config = _render_runtime_settings(base_config)
+
+if selected_page == PAGE_SPLICE:
+    _render_splice_page(config)
 else:
-    st.title(f"Python + Streamlit 视频工具 v{APP_VERSION}")
-
-    base_config = load_config()
-
-    with st.sidebar:
-        st.caption(f"App Version {APP_VERSION}")
-        selected_page = st.radio("功能页", [PAGE_SPLICE, PAGE_ATTACHMENT], label_visibility="visible")
-        config = _render_runtime_settings(base_config)
-
-    if selected_page == PAGE_SPLICE:
-        _render_splice_page(config)
-    else:
-        _render_attachment_page(config)
+    _render_attachment_page(config)

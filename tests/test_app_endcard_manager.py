@@ -17,7 +17,7 @@ SOURCE_ENDCARD_PATH = PROJECT_ROOT / "assets" / "video" / "endcard.mp4"
 def _build_app_test(monkeypatch, tmp_path: Path) -> AppTest:
     default_endcard = tmp_path / "default-endcard.mp4"
     managed_dir = tmp_path / "managed-endcard"
-    managed_dir.mkdir(parents=True)
+    managed_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(SOURCE_ENDCARD_PATH, default_endcard)
     timestamp = 1774019123
     os.utime(default_endcard, (timestamp, timestamp))
@@ -55,23 +55,36 @@ def test_splice_page_shows_compact_endcard_summary_by_default(monkeypatch, tmp_p
     assert "上传新的落版视频" not in _uploader_labels(app_test)
     assert len(app_test.get("video")) == 0
     preview_link = next(item for item in app_test.get("link_button") if item.proto.label == "预览落版")
-    assert preview_link.proto.url == "?endcard_preview=1"
+    assert "/media/" in preview_link.proto.url
+    assert preview_link.proto.url.endswith(".mp4")
     assert any("**当前落版：** 默认" in value for value in _markdown_values(app_test))
     assert any("**更新：** 2026-03-20" in value for value in _markdown_values(app_test))
     assert all("15:05:23" not in value for value in _markdown_values(app_test))
 
 
-def test_preview_page_renders_video_in_separate_view(monkeypatch, tmp_path: Path) -> None:
+def test_preview_link_switches_to_mov_media_url_after_reupload(monkeypatch, tmp_path: Path) -> None:
     app_test = _build_app_test(monkeypatch, tmp_path)
-    app_test.query_params["endcard_preview"] = "1"
 
     app_test.run(timeout=10)
+    default_link = next(item for item in app_test.get("link_button") if item.proto.label == "预览落版")
 
-    assert len(app_test.get("video")) == 1
-    assert "上传新的落版视频" not in _uploader_labels(app_test)
-    assert "上传并立即生效" not in _button_labels(app_test)
-    assert "更换落版" not in _button_labels(app_test)
-    assert any(item.value == "落版预览" for item in app_test.title)
+    managed_dir = endcard_store_module.DEFAULT_MANAGED_ENDCARD_DIR
+    mov_bytes = (tmp_path / "managed.mov")
+    shutil.copyfile(SOURCE_ENDCARD_PATH, mov_bytes)
+    endcard_store_module.replace_endcard_upload(
+        upload_name="fresh.mov",
+        upload_bytes=mov_bytes.read_bytes(),
+        managed_dir=managed_dir,
+        probe_video_fn=lambda _: object(),
+    )
+
+    app_test = _build_app_test(monkeypatch, tmp_path)
+    app_test.run(timeout=10)
+    managed_link = next(item for item in app_test.get("link_button") if item.proto.label == "预览落版")
+
+    assert "/media/" in managed_link.proto.url
+    assert managed_link.proto.url.endswith(".mov")
+    assert managed_link.proto.url != default_link.proto.url
 
 
 def test_replace_button_expands_uploader_only(monkeypatch, tmp_path: Path) -> None:
