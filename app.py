@@ -14,11 +14,13 @@ import streamlit as st
 
 from video_splicer.artifact import build_download_artifact, collect_work_dirs, save_results_directory
 from video_splicer.config import (
+    DEFAULT_ENDCARD_PATH,
     build_runtime_config,
     load_config,
     validate_attachment_runtime,
     validate_splice_runtime,
 )
+from video_splicer.endcard_store import EndcardAsset, EndcardUploadError, replace_endcard_upload, resolve_active_endcard
 from video_splicer.input_parser import (
     assign_attachment_output_filenames,
     assign_output_filenames,
@@ -91,6 +93,13 @@ def _reset_page_state(prefix: str) -> None:
     st.session_state[_state_key(prefix, "local_result_dir")] = None
     st.session_state[_state_key(prefix, "local_result_error")] = ""
     st.session_state[_state_key(prefix, "open_result_dir_error")] = ""
+
+
+def _ensure_endcard_state() -> None:
+    if "sp_endcard_feedback" not in st.session_state:
+        st.session_state["sp_endcard_feedback"] = ""
+    if "sp_endcard_error" not in st.session_state:
+        st.session_state["sp_endcard_error"] = ""
 
 
 def _sync_preview_state(prefix: str, current_signature: str) -> None:
@@ -255,6 +264,86 @@ def _open_result_directory(result_dir: Path) -> str | None:
         return f"打开结果目录失败：{exc}"
 
     return None
+
+
+def _format_file_size(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes} B"
+
+
+def _format_last_modified(path: Path) -> str:
+    if not path.is_file():
+        return "未找到文件"
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _render_endcard_asset_summary(asset: EndcardAsset) -> None:
+    status_label = "已上传落版视频" if asset.source == "MANAGED" else "默认落版视频"
+    info_col, upload_col = st.columns([1.2, 1.0])
+
+    with info_col:
+        st.markdown(f"**当前来源：** {status_label}")
+        st.markdown(f"**当前文件：** `{asset.file_name}`")
+        st.markdown(f"**文件格式：** `{asset.suffix.replace('.', '').upper() or '未知'}`")
+        st.markdown(f"**文件大小：** {_format_file_size(asset.size_bytes)}")
+        st.markdown(f"**最后更新时间：** {_format_last_modified(asset.path)}")
+        st.caption("上传成功后会立即影响后续新发起的拼接任务，正在处理的批次不会切换。")
+        if asset.path.is_file():
+            st.video(asset.path.read_bytes(), format=asset.mime_type)
+        else:
+            st.warning(f"当前落版视频不存在：{asset.path}")
+
+    with upload_col:
+        uploaded_endcard = st.file_uploader(
+            "上传新的落版视频",
+            type=["mp4", "mov"],
+            key="sp_endcard_upload_file",
+            help="仅支持 mp4 和 mov，上传成功后会覆盖当前生效的落版视频。",
+        )
+        upload_clicked = st.button("上传并立即生效", type="primary", use_container_width=True, key="sp_endcard_upload")
+
+        if upload_clicked:
+            if uploaded_endcard is None:
+                st.session_state["sp_endcard_feedback"] = ""
+                st.session_state["sp_endcard_error"] = "请先选择一个 mp4 或 mov 落版视频。"
+            else:
+                try:
+                    replace_endcard_upload(
+                        upload_name=uploaded_endcard.name,
+                        upload_bytes=uploaded_endcard.getvalue(),
+                    )
+                except EndcardUploadError as exc:
+                    st.session_state["sp_endcard_feedback"] = ""
+                    st.session_state["sp_endcard_error"] = str(exc)
+                except Exception as exc:  # noqa: BLE001
+                    st.session_state["sp_endcard_feedback"] = ""
+                    st.session_state["sp_endcard_error"] = f"落版视频保存失败：{exc}"
+                else:
+                    st.session_state["sp_endcard_error"] = ""
+                    st.session_state["sp_endcard_feedback"] = "新落版已保存，后续新发起的拼接任务将使用该文件。"
+                    st.rerun()
+
+
+def _render_endcard_manager() -> None:
+    _ensure_endcard_state()
+    feedback_message = str(st.session_state.get("sp_endcard_feedback", ""))
+    error_message = str(st.session_state.get("sp_endcard_error", ""))
+    default_endcard_path = Path(os.getenv("SP_ENDCARD_PATH", str(DEFAULT_ENDCARD_PATH))).expanduser()
+    asset = resolve_active_endcard(default_endcard=default_endcard_path)
+
+    st.subheader("落版视频管理")
+    if feedback_message:
+        st.success(feedback_message)
+        st.session_state["sp_endcard_feedback"] = ""
+    if error_message:
+        st.error(error_message)
+        st.session_state["sp_endcard_error"] = ""
+
+    _render_endcard_asset_summary(asset)
+    st.markdown("---")
 
 
 def _initialize_runtime_setting_state(config: Config) -> None:
@@ -637,6 +726,7 @@ def _build_attachment_preview(
 
 
 def _render_splice_page(config: Config) -> None:
+    _render_endcard_manager()
     _render_processing_page(
         prefix="sp_splice",
         page_title="视频拼接",
