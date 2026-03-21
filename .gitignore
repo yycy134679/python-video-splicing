@@ -35,7 +35,6 @@ venv_build/
 icon.iconset/
 
 # Generated media/output artifacts
-*.mp4
 *.zip
 result.csv
 
