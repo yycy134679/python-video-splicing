@@ -39,7 +39,6 @@ from video_splicer.input_parser import (
 from video_splicer.models import Config, InputPreview, InputRow, ParseFailure, TaskResult
 from video_splicer.runner import process_attachment_batch, process_batch
 
-APP_VERSION = "2.1"
 PAGE_SPLICE = "视频拼接"
 PAGE_ATTACHMENT = "视频链接转附件"
 RUNTIME_SETTING_KEYS = {
@@ -61,18 +60,11 @@ def _state_key(prefix: str, suffix: str) -> str:
     return f"{prefix}_{suffix}"
 
 
-def _build_input_signature(
-    identifier_text: str, video_url_text: str, upload_name: str | None, upload_bytes: bytes | None
-) -> str:
+def _build_input_signature(identifier_text: str, video_url_text: str) -> str:
     hasher = hashlib.sha256()
     hasher.update(identifier_text.encode("utf-8"))
     hasher.update(b"\0")
     hasher.update(video_url_text.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update((upload_name or "").encode("utf-8"))
-    hasher.update(b"\0")
-    if upload_bytes:
-        hasher.update(upload_bytes)
     return hasher.hexdigest()
 
 
@@ -471,7 +463,6 @@ def _process_page_request(
     prefix: str,
     identifier_text: str,
     video_url_text: str,
-    uploaded_file: object,
     parser: PageParser,
     processor: PageProcessor,
     filename_assigner: FilenameAssigner,
@@ -495,9 +486,7 @@ def _process_page_request(
         ratio = 1.0 if total == 0 else done / total
         progress_box.progress(min(max(ratio, 0.0), 1.0))
 
-    upload_bytes = uploaded_file.getvalue() if uploaded_file else None
-    upload_name = uploaded_file.name if uploaded_file else None
-    rows, parse_failures = parser(identifier_text, video_url_text, upload_name, upload_bytes)
+    rows, parse_failures = parser(identifier_text, video_url_text, None, None)
 
     if not rows and not parse_failures:
         st.warning("请输入至少一条有效数据。")
@@ -527,12 +516,7 @@ def _process_page_request(
             log_cb("运行前置检查失败，已跳过处理")
             progress_cb(len(rows), len(rows))
         else:
-            processed_results = processor(
-                rows=rows,
-                config=config,
-                log_cb=log_cb,
-                progress_cb=progress_cb,
-            )
+            processed_results = processor(rows, config, log_cb, progress_cb)
     else:
         progress_cb(1, 1)
 
@@ -575,7 +559,6 @@ def _render_processing_page(
     result_dir_prefix: str,
     identifier_input_label: str,
     identifier_placeholder: str,
-    upload_label: str,
     instruction_lines: list[str],
     parser: PageParser,
     processor: PageProcessor,
@@ -621,26 +604,8 @@ def _render_processing_page(
         )
         st.caption(f"当前共 {count_non_empty_lines(video_url_text)} 条数据")
 
-    uploaded_file = st.file_uploader(
-        upload_label,
-        type=["csv", "xlsx", "xlsm"],
-        key=_state_key(prefix, "uploaded_file"),
-    )
-    upload_bytes = uploaded_file.getvalue() if uploaded_file else None
-    upload_name = uploaded_file.name if uploaded_file else None
-    current_signature = _build_input_signature(identifier_text, video_url_text, upload_name, upload_bytes)
+    current_signature = _build_input_signature(identifier_text, video_url_text)
     _sync_preview_state(prefix, current_signature)
-
-    has_text_input = bool(count_non_empty_lines(identifier_text) or count_non_empty_lines(video_url_text))
-    if uploaded_file and has_text_input:
-        st.info("已检测到文本输入，当前预览与处理会忽略上传文件。")
-    elif uploaded_file:
-        upload_preview = preview_builder("", "", upload_name, upload_bytes)
-        st.caption(
-            f"文件中共 {len(upload_preview.rows)} 条原始数据，"
-            f"{identifier_input_label.replace('（每行一条）', '')} {upload_preview.identifier_count} 条，"
-            f"视频链接 {upload_preview.video_url_count} 条。"
-        )
 
     preview = _get_current_preview(prefix, current_signature)
     button_col, start_col = st.columns(2)
@@ -648,7 +613,7 @@ def _render_processing_page(
         preview_clicked = st.button("确认数据并预览", key=_state_key(prefix, "preview_button"))
 
     if preview_clicked:
-        preview = preview_builder(identifier_text, video_url_text, upload_name, upload_bytes)
+        preview = preview_builder(identifier_text, video_url_text, None, None)
         _store_preview(prefix, preview, current_signature)
 
     can_start_processing = bool(preview and not preview.blocking_errors)
@@ -664,7 +629,7 @@ def _render_processing_page(
         st.caption("请先点击“确认数据并预览”，并确保当前数据校验通过后再开始处理。")
 
     if start_clicked:
-        preview = preview_builder(identifier_text, video_url_text, upload_name, upload_bytes)
+        preview = preview_builder(identifier_text, video_url_text, None, None)
         _store_preview(prefix, preview, current_signature)
         if preview.blocking_errors:
             _reset_page_state(prefix)
@@ -674,7 +639,6 @@ def _render_processing_page(
             prefix=prefix,
             identifier_text=identifier_text,
             video_url_text=video_url_text,
-            uploaded_file=uploaded_file,
             parser=parser,
             processor=processor,
             filename_assigner=filename_assigner,
@@ -754,13 +718,10 @@ def _render_splice_page(config: Config) -> None:
         result_dir_prefix="splice",
         identifier_input_label="PID（每行一条）",
         identifier_placeholder="demo001\ndemo001\ndemo002",
-        upload_label="可选文件上传（CSV: pid,video_url；Excel: 商品id,视频链接）",
         instruction_lines=[
             "- 左侧输入 `pid`，右侧输入 `video_url`，按行一一对应",
-            "- 任一文本框存在非空行时，会忽略上传文件",
             "- 输入后可先点击“确认数据并预览”，查看总条数及前 5 条/后 5 条原始数据",
             "- 手动输入两列条数不一致，或存在非法链接时，会阻止开始处理",
-            "- 上传 Excel 时自动读取列：`商品id`、`视频链接`（空链接行自动忽略）",
             "- 仅支持公开 `http/https` 链接",
             "- 输出文件按输入顺序命名为 `1.mp4`、`2.mp4`、`3.mp4`...",
             "- 处理完成后会同步保存到本机下载目录下的独立结果文件夹，并支持直接打开结果目录",
@@ -784,14 +745,10 @@ def _render_attachment_page(config: Config) -> None:
         result_dir_prefix="attachment",
         identifier_input_label="Item ID（每行一条）",
         identifier_placeholder="item001\nitem001\nitem002",
-        upload_label="可选文件上传（CSV: item_id,video_url；兼容 pid,video_url；Excel: 商品id,视频链接）",
         instruction_lines=[
             "- 左侧输入 `item_id`，右侧输入 `video_url`，按行一一对应",
-            "- 任一文本框存在非空行时，会忽略上传文件",
             "- 输入后可先点击“确认数据并预览”，查看总条数及前 5 条/后 5 条原始数据",
-            "- 手动输入两列条数不一致，或文件里存在非法数据时，会阻止开始处理",
-            "- 上传 CSV 时支持列：`item_id`、`video_url`，也兼容旧格式 `pid`、`video_url`",
-            "- 上传 Excel 时自动读取列：`商品id`、`视频链接`（空链接行自动忽略）",
+            "- 手动输入两列条数不一致，或存在非法链接时，会阻止开始处理",
             "- 输出文件固定为 `item_id.mp4`，重复 `item_id` 自动追加 `__2`、`__3` 后缀",
             "- 下载能力取决于运行当前应用机器的网络环境；如目标链接需 VPN，则运行机器也必须可访问",
             "- 处理完成后会同步保存到本机下载目录下的独立结果文件夹，并支持直接打开结果目录",
@@ -807,12 +764,11 @@ def _render_attachment_page(config: Config) -> None:
     )
 
 
-st.set_page_config(page_title=f"视频拼接工具 v{APP_VERSION}", layout="wide")
+st.set_page_config(page_title="视频拼接工具", layout="wide")
 
 base_config = load_config()
 
 with st.sidebar:
-    st.caption(f"App Version {APP_VERSION}")
     selected_page = st.radio("功能页", [PAGE_SPLICE, PAGE_ATTACHMENT], label_visibility="visible")
     config = _render_runtime_settings(base_config)
 

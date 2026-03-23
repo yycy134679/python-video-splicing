@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 from pathlib import Path
@@ -48,6 +49,10 @@ def _link_button_labels(app_test: AppTest) -> list[str]:
 
 def _markdown_values(app_test: AppTest) -> list[str]:
     return [item.value for item in app_test.markdown]
+
+
+def _caption_values(app_test: AppTest) -> list[str]:
+    return [item.value for item in app_test.caption]
 
 
 def test_splice_page_shows_compact_endcard_summary_by_default(monkeypatch, tmp_path: Path) -> None:
@@ -104,6 +109,43 @@ def test_hidden_endcard_uploader_is_mounted_without_extra_confirm_step(monkeypat
     assert len(endcard_uploaders) == 1
     assert build_endcard_upload_widget_key(0) in endcard_uploaders[0].proto.id
     assert "上传并立即生效" not in _button_labels(app_test)
+
+
+def test_processing_pages_do_not_show_data_upload_entry_or_version_caption(monkeypatch, tmp_path: Path) -> None:
+    app_test = _build_app_test(monkeypatch, tmp_path)
+
+    app_test.run(timeout=10)
+
+    assert _uploader_labels(app_test) == ["上传新的落版视频"]
+    assert all("App Version" not in value for value in _caption_values(app_test))
+
+    app_test.radio[0].set_value("视频链接转附件")
+    app_test.run(timeout=10)
+
+    assert _uploader_labels(app_test) == []
+    assert all("App Version" not in value for value in _caption_values(app_test))
+
+
+def test_page_config_uses_title_without_version_suffix() -> None:
+    module = ast.parse(APP_PATH.read_text(encoding="utf-8"))
+
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute):
+            continue
+        if not isinstance(node.func.value, ast.Name) or node.func.value.id != "st":
+            continue
+        if node.func.attr != "set_page_config":
+            continue
+
+        for keyword in node.keywords:
+            if keyword.arg == "page_title":
+                assert isinstance(keyword.value, ast.Constant)
+                assert keyword.value.value == "视频拼接工具"
+                return
+
+    raise AssertionError("未找到 st.set_page_config 的 page_title 配置")
 
 
 def test_build_endcard_upload_trigger_html_contains_picker_script() -> None:
