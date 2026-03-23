@@ -808,7 +808,6 @@ def _render_attachment_page(config: Config) -> None:
 
 
 st.set_page_config(page_title=f"视频拼接工具 v{APP_VERSION}", layout="wide")
-st.title(f"Python + Streamlit 视频工具 v{APP_VERSION}")
 
 base_config = load_config()
 

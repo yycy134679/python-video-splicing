@@ -55,6 +55,7 @@ def test_splice_page_shows_compact_endcard_summary_by_default(monkeypatch, tmp_p
 
     app_test.run(timeout=10)
 
+    assert len(app_test.get("title")) == 0
     assert [item.value for item in app_test.subheader] == ["视频拼接"]
     assert "预览落版" in _link_button_labels(app_test)
     assert "上传并立即生效" not in _button_labels(app_test)
